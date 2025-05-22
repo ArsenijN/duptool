@@ -763,7 +763,8 @@ fn move_duplicates_to_deleted(
                 }
             };
 
-            let target_path = sanitize_path(&deleted_folder.join(relative_path));
+            // Fix: Only add one "deleted" prefix, not recursively
+            let target_path = deleted_folder.join(relative_path);
 
             if options.debug {
                 println!("Moving file: {}", sanitized_file_path.display());
