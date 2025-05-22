@@ -5,9 +5,22 @@ I keep all changes here, so versions can be easily compared between themself
 
 ## Changes: V0.1.6
 - Fixed logic for "-C" (quick check) with "-E"/"-A": now files are first filtered by 8MB chunk comparison, only those that pass are grouped for full hash comparison.
-- This ensures that only files with matching quick content are processed in the next stage, as intended.
-- ETA and speed calculation improved (from previous version).
+- After quick check, **full hash is always performed** for all files in candidate groups, regardless of `-C` flag, ensuring correct duplicate detection and consistent performance.
+- Enhanced async mode and async mode now always perform full hash after quick check, not just quick hash.
+- Fixed bug with recursive "deleted" folders when moving files.
+- Improved ETA and speed calculation (updates every 0.5s or per file).
+- Improved debug output and error handling.
 - See TODO below for planned improvements.
+
+## Notes on performance: Why is "-ABCEFX" much faster than "-ABEFX"?
+
+- **"-ABCEFX"** uses the quick check (`-C`): it first compares only the first and last 8MB of each file. Only files that match these chunks are then fully hashed. For most files, this means a very fast comparison, since mismatches are detected early and full hashing is avoided for non-duplicates.
+- **"-ABEFX"** does not use the quick check: it always reads and hashes the entire file content for every candidate, which is much slower, especially for large files.
+- Even though both modes eventually do a full hash for files that pass the quick check, the quick check eliminates most non-duplicates early, so far fewer files need to be fully read and hashed.
+
+**Summary:**  
+- `-C` (quick check) acts as a fast filter, drastically reducing the number of full file reads/hashes.
+- Without `-C`, every file in a candidate group is fully read and hashed, which is much slower for large files.
 
 ## Changes: V0.1.5
 - Added "Force delete" by "-F" / "--force-delete". Moves all duplicates from the first folder to the "deleted" subfolder, ignoring the path in the second folder (unlike "-D" which checks for the same relative path in both folders).

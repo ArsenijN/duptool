@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
     
     // Parse command line arguments
     let matches = Command::new("duptool")
-        .version("1.5")
+        .version("1.6")
         .author("ArsenijN")
         .about("Finds duplicate files across directories")
         .arg(
@@ -314,35 +314,29 @@ fn find_duplicates(
     // --- QUICK CHECK FILTER FOR -C/-E ---
     let mut quick_checked_groups = name_filtered_groups.clone();
     if options.quick_content_check && (options.async_compare || options.enhanced_async) {
-        // For each group, only keep files that pass the quick check (8MB chunks)
+        // For each group, split by quick hash, and only keep groups with files from both folders
         quick_checked_groups = name_filtered_groups
             .into_iter()
-            .filter_map(|group| {
-                // Group by size and name, then by quick hash
+            .flat_map(|group| {
                 let mut quick_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
                 for file in &group {
                     if let Some(h) = calculate_file_hash(file, true).ok().flatten() {
                         quick_hash_map.entry(h).or_default().push(file.clone());
                     }
                 }
-                // Only keep groups with files from both folders
-                let mut filtered = Vec::new();
-                for files in quick_hash_map.values() {
-                    if files.len() > 1 && has_files_from_both_folders(files) {
-                        filtered.extend_from_slice(files);
-                    }
-                }
-                if filtered.len() > 1 {
-                    Some(filtered)
-                } else {
-                    None
-                }
+                // For each quick hash group, only keep if it has files from both folders
+                quick_hash_map
+                    .into_values()
+                    .filter(|files| files.len() > 1 && has_files_from_both_folders(files))
+                    .collect::<Vec<Vec<FileInfo>>>()
             })
             .collect();
         println!("After quick check: {} groups remain", quick_checked_groups.len());
     }
 
-    // Finally, compare content if needed
+    // --- FULL HASH FOR ALL FILES IN GROUPS ---
+    // At this point, quick_checked_groups contains only files that matched on quick check and are grouped by quick hash.
+    // Now, for each group, do a full hash comparison (content compare) with quick_content_check=false to force full hash.
     let mut duplicates = Vec::new();
 
     if options.compare_content {
@@ -352,10 +346,14 @@ fn find_duplicates(
             .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
 
+        // Always do full hash for all files in quick_checked_groups, regardless of -C
+        let mut full_hash_options = options.clone();
+        full_hash_options.quick_content_check = false;
+
         if options.async_compare || options.enhanced_async {
-            duplicates = async_content_compare(quick_checked_groups, options.clone(), progress_bar)?;
+            duplicates = async_content_compare(quick_checked_groups, full_hash_options, progress_bar)?;
         } else {
-            duplicates = sync_content_compare(quick_checked_groups, options, progress_bar)?;
+            duplicates = sync_content_compare(quick_checked_groups, &full_hash_options, progress_bar)?;
         }
     } else {
         // If no content comparison, just convert to duplicate groups
@@ -763,8 +761,7 @@ fn move_duplicates_to_deleted(
                 }
             };
 
-            // Fix: Only add one "deleted" prefix, not recursively
-            let target_path = deleted_folder.join(relative_path);
+            let target_path = sanitize_path(&deleted_folder.join(relative_path));
 
             if options.debug {
                 println!("Moving file: {}", sanitized_file_path.display());
