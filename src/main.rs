@@ -312,7 +312,7 @@ fn find_duplicates(
     }
 
     // --- QUICK CHECK FILTER FOR -C/-E ---
-    let mut quick_checked_groups = name_filtered_groups;
+    let mut quick_checked_groups = name_filtered_groups.clone();
     if options.quick_content_check && (options.async_compare || options.enhanced_async) {
         // For each group, only keep files that pass the quick check (8MB chunks)
         quick_checked_groups = name_filtered_groups
