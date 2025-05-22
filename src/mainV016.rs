@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
     
     // Parse command line arguments
     let matches = Command::new("duptool")
-        .version("1.7")
+        .version("1.6")
         .author("ArsenijN")
         .about("Finds duplicate files across directories")
         .arg(
@@ -311,50 +311,10 @@ fn find_duplicates(
         name_filtered_groups = potential_duplicates;
     }
 
-    // --- CORRECT QUICK CHECK LOGIC ---
-    // - If only -C: compare only first and last 8MB, never full hash.
-    // - If -C and -A/-E: first filter by quick check, then do full hash for those that match.
-    // - If -A/-E without -C: always do full hash.
-    // - If neither: always do full hash (sync).
-
+    // --- QUICK CHECK FILTER FOR -C/-E ---
     let mut quick_checked_groups = name_filtered_groups.clone();
-
-    if options.quick_content_check && !(options.async_compare || options.enhanced_async) {
-        // Only -C: compare only first and last 8MB, never full hash
-        quick_checked_groups = name_filtered_groups
-            .into_iter()
-            .flat_map(|group| {
-                let mut quick_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
-                for file in &group {
-                    if let Some(h) = calculate_file_hash(file, true).ok().flatten() {
-                        quick_hash_map.entry(h).or_default().push(file.clone());
-                    }
-                }
-                quick_hash_map
-                    .into_values()
-                    .filter(|files| files.len() > 1 && has_files_from_both_folders(files))
-                    .collect::<Vec<Vec<FileInfo>>>()
-            })
-            .collect();
-        println!("After quick check: {} groups remain", quick_checked_groups.len());
-
-        // Output results based on quick check only, no full hash
-        let mut duplicates = Vec::new();
-        for group in quick_checked_groups {
-            if !group.is_empty() {
-                let mut files_by_folder = vec![Vec::new(), Vec::new()];
-                let size = group[0].size;
-                for file in group {
-                    files_by_folder[file.folder_index].push(file.path);
-                }
-                duplicates.push(DuplicateGroup { files_by_folder, size });
-            }
-        }
-        return Ok(duplicates);
-    }
-
-    // If -C and -A/-E: filter by quick check, then do full hash for those that match
     if options.quick_content_check && (options.async_compare || options.enhanced_async) {
+        // For each group, split by quick hash, and only keep groups with files from both folders
         quick_checked_groups = name_filtered_groups
             .into_iter()
             .flat_map(|group| {
@@ -364,6 +324,7 @@ fn find_duplicates(
                         quick_hash_map.entry(h).or_default().push(file.clone());
                     }
                 }
+                // For each quick hash group, only keep if it has files from both folders
                 quick_hash_map
                     .into_values()
                     .filter(|files| files.len() > 1 && has_files_from_both_folders(files))
@@ -374,6 +335,8 @@ fn find_duplicates(
     }
 
     // --- FULL HASH FOR ALL FILES IN GROUPS ---
+    // At this point, quick_checked_groups contains only files that matched on quick check and are grouped by quick hash.
+    // Now, for each group, do a full hash comparison (content compare) with quick_content_check=false to force full hash.
     let mut duplicates = Vec::new();
 
     if options.compare_content {
@@ -383,15 +346,13 @@ fn find_duplicates(
             .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
 
-        // If -A or -E, do async/enhanced async content compare (with or without quick check as above)
+        // Always do full hash for all files in quick_checked_groups, regardless of -C
+        let mut full_hash_options = options.clone();
+        full_hash_options.quick_content_check = false;
+
         if options.async_compare || options.enhanced_async {
-            let mut full_hash_options = options.clone();
-            full_hash_options.quick_content_check = false;
             duplicates = async_content_compare(quick_checked_groups, full_hash_options, progress_bar)?;
         } else {
-            // If not -A/-E, always use full hash (unless only -C, which is handled above)
-            let mut full_hash_options = options.clone();
-            full_hash_options.quick_content_check = false;
             duplicates = sync_content_compare(quick_checked_groups, &full_hash_options, progress_bar)?;
         }
     } else {
