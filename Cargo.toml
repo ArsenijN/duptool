@@ -1,0 +1,13 @@
+[package]
+name = "duptool"
+version = "0.1.5"
+edition = "2021"
+authors = ["ArsenijN"]
+description = "A tool for finding duplicate files across directories"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive", "cargo"] }
+walkdir = "2.3"
+md5 = "0.7"
+indicatif = "0.17"
+num_cpus = "1.15"
