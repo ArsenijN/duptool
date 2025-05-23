@@ -1,6 +1,6 @@
 [package]
 name = "duptool"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["ArsenijN"]
 description = "A tool for finding duplicate files across directories"

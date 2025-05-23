@@ -3,6 +3,12 @@ I keep all changes here, so versions can be easily compared between themself
 
 ---
 
+## Changes: V0.1.9
+- **New `-b` / `--intra` flag:** Find duplicates within each folder (intra-folder), as well as between folders.
+- **New `-1` / `--single` flag:** Find duplicates only within a single folder (no second folder required).
+- **Default behavior:** Only finds duplicates between folders, not within, unless `-b` or `-1` is specified.
+- **Version bump to 1.9.**
+
 ## Changes: V0.1.8
 - **Progress bars improved:** Now both group and file progress are shown using two bars (via indicatif's MultiProgress).
 - **ETA and speed reporting:** ETA and speed are updated more frequently and displayed for both progress bars.

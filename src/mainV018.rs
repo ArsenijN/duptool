@@ -29,12 +29,11 @@ struct CompareOptions {
     everything_size: bool,
     bidirectional: bool,
     async_compare: bool,
-    hdd_optimized: bool,
-    delete_duplicates: bool,
-    debug: bool,
-    enhanced_async: bool,
-    force_delete: bool,
-    intra_folder: bool, // NEW: intra-folder duplicate search
+    hdd_optimized: bool, // Add flag for HDD optimization
+    delete_duplicates: bool, // Add flag for deleting duplicates
+    debug: bool, // Add flag for debugging
+    enhanced_async: bool, // Add flag for enhanced async mode
+    force_delete: bool, // Add flag for force delete mode
 }
 
 #[derive(Debug)]
@@ -48,19 +47,19 @@ fn main() -> io::Result<()> {
     
     // Parse command line arguments
     let matches = Command::new("duptool")
-        .version("1.9") // Version bump
+        .version("1.8")
         .author("ArsenijN")
         .about("Finds duplicate files across directories")
         .arg(
             Arg::new("folder1")
                 .required(true)
-                .help("First folder to compare (or the only folder in --single mode)")
+                .help("First folder to compare")
                 .index(1),
         )
         .arg(
             Arg::new("folder2")
-                .required(false)
-                .help("Second folder to compare (omit for --single mode)")
+                .required(true)
+                .help("Second folder to compare")
                 .index(2),
         )
         .arg(
@@ -113,13 +112,6 @@ fn main() -> io::Result<()> {
                 .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::new("intra")
-                .short('b')
-                .long("intra")
-                .help("Also find duplicates within each folder (intra-folder search)")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
             Arg::new("async")
                 .short('A')
                 .long("async")
@@ -168,23 +160,11 @@ fn main() -> io::Result<()> {
                 .help("Move all duplicates from the first folder to 'deleted' subfolder, ignoring path in second folder")
                 .action(ArgAction::SetTrue),
         )
-        .arg(
-            Arg::new("single")
-                .short('1')
-                .long("single")
-                .help("Find duplicates only within the first folder (single folder mode)")
-                .action(ArgAction::SetTrue),
-        )
         .get_matches();
 
-    let single_mode = matches.get_flag("single");
     let folder1 = matches.get_one::<String>("folder1").unwrap();
-    let folder2 = if single_mode {
-        "" // Not used in single mode
-    } else {
-        matches.get_one::<String>("folder2").map(|s| s.as_str()).unwrap_or("")
-    };
-
+    let folder2 = matches.get_one::<String>("folder2").unwrap();
+    
     // Define comparison options
     let mut options = CompareOptions {
         compare_content: matches.get_flag("content"),
@@ -200,16 +180,13 @@ fn main() -> io::Result<()> {
         debug: matches.get_flag("debug"),
         enhanced_async: matches.get_flag("enhanced_async"),
         force_delete: matches.get_flag("force_delete"),
-        intra_folder: matches.get_flag("intra") || single_mode, // Always intra-folder in single mode
     };
 
     if options.debug {
         println!("Debug mode enabled");
         println!("Options: {:?}", options);
         println!("Folder1: {}", folder1);
-        if !single_mode {
-            println!("Folder2: {}", folder2);
-        }
+        println!("Folder2: {}", folder2);
     }
 
     // Default behavior: if none of the main comparison options are selected, use content comparison
@@ -225,29 +202,18 @@ fn main() -> io::Result<()> {
 
     println!("Scanning directories...");
     let folder1_files = collect_files(folder1, 0, options.hdd_optimized)?;
-    let folder2_files = if single_mode {
-        Vec::new()
-    } else {
-        collect_files(folder2, 1, options.hdd_optimized)?
-    };
+    let folder2_files = collect_files(folder2, 1, options.hdd_optimized)?;
 
     println!("Found {} files in {}", folder1_files.len(), folder1);
-    if !single_mode {
-        println!("Found {} files in {}", folder2_files.len(), folder2);
-    }
+    println!("Found {} files in {}", folder2_files.len(), folder2);
 
     let duplicates = find_duplicates(folder1_files, folder2_files, &options)?;
 
     if options.delete_duplicates || options.force_delete {
-        if !single_mode {
-            move_duplicates_to_deleted(&duplicates, folder1, folder2, &options)?;
-        } else {
-            // In single mode, just move to deleted in folder1
-            move_duplicates_to_deleted(&duplicates, folder1, "", &options)?;
-        }
+        move_duplicates_to_deleted(&duplicates, folder1, folder2, &options)?;
     }
 
-    display_results(&duplicates, folder1, if single_mode { "" } else { folder2 });
+    display_results(&duplicates, folder1, folder2);
     
     println!("Completed in {:.2} seconds", start_time.elapsed().as_secs_f32());
     
@@ -295,39 +261,36 @@ fn find_duplicates(
     
     // Group files by size as a first pass
     let mut size_groups: HashMap<u64, Vec<FileInfo>> = HashMap::new();
+    
     for file in folder1_files.clone() {
         size_groups.entry(file.size).or_default().push(file);
     }
-    for file in folder2_files.clone() {
-        size_groups.entry(file.size).or_default().push(file);
-    }
-
+    
     // Only keep size groups with potential duplicates
     let mut potential_duplicates: Vec<Vec<FileInfo>> = Vec::new();
-    for group in size_groups.values() {
-        if group.len() > 1 {
-            potential_duplicates.push(group.clone());
+    
+    for file in folder2_files {
+        if let Some(group) = size_groups.get_mut(&file.size) {
+            // Add this file to the group
+            group.push(file);
+            
+            // If this is the second file in the group, it's now a potential duplicate group
+            if group.len() == 2 {
+                potential_duplicates.push(group.clone());
+            }
+        } else if !options.bidirectional {
+            // If not bidirectional, we need to consider all files
+            size_groups.entry(file.size).or_default().push(file);
         }
     }
-
-    // If not intra_folder and not bidirectional, filter out groups that are only within one folder
-    let potential_duplicates: Vec<Vec<FileInfo>> = if options.intra_folder {
-        // Keep all groups with more than one file (intra-folder and inter-folder)
-        potential_duplicates
-    } else if options.bidirectional {
-        // Only groups with files from both folders (inter-folder only)
-        potential_duplicates
-            .into_iter()
-            .filter(|group| has_files_from_both_folders(group))
-            .collect()
-    } else {
-        // Default: only inter-folder duplicates
-        potential_duplicates
-            .into_iter()
-            .filter(|group| has_files_from_both_folders(group))
-            .collect()
-    };
-
+    
+    // Filter out size groups with only one file
+    let potential_duplicates: Vec<Vec<FileInfo>> = size_groups
+        .into_values()
+        .filter(|group| group.len() > 1 && 
+                         (!options.bidirectional || has_files_from_both_folders(group)))
+        .collect();
+    
     println!("Found {} potential duplicate groups by size", potential_duplicates.len());
     
     // Next, apply name comparison if needed
