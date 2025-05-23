@@ -65,11 +65,85 @@ duptool --help
 
 ## 📦 Installation
 
-```sh
-cargo build --release
-```
+### 🔧 Building from Source
 
-Then copy the binary from `target/release/duptool`.
+To build `duptool` from source:
+
+1. **Install Rust and Cargo**
+
+   Ensure you have the Rust toolchain installed. If not, install it using [rustup](https://rustup.rs/):
+
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+   After installation, restart your terminal or run:
+
+   ```bash
+   source $HOME/.cargo/env
+   ```
+
+   Confirm the installation:
+
+   ```bash
+   rustc --version
+   cargo --version
+   ```
+
+2. **Clone the Repository**
+
+   Clone the `duptool` repository from GitHub:
+
+   ```bash
+   git clone https://github.com/ArsenijN/duptool.git
+   cd duptool
+   ```
+
+3. **Build the Project**
+
+   Compile the project in release mode for optimized performance:
+
+   ```bash
+   cargo build --release
+   ```
+
+   The compiled binary will be located at:
+
+   ```
+   target/release/duptool
+   ```
+
+   You can move this binary to a directory in your system's `PATH` for easier access.
+
+### 📥 Downloading Precompiled Binaries
+
+Precompiled binaries for various platforms are available on the [Releases](https://github.com/ArsenijN/duptool/releases) page. These binaries are digitally signed using a self-signed certificate to verify their authenticity and integrity.
+
+**Verifying the Digital Signature:**
+
+Each release includes:
+
+* The signed binary (e.g., `duptool.exe`)
+* The detached signature file (e.g., `duptool.exe.sig`)
+* The public certificate file (e.g., `duptool_public.cer`)
+
+To verify the signature:
+
+1. **Obtain the Public Certificate**
+
+   Download the `duptool_public.cer` file from the release assets.
+
+2. **Verify the Signature**
+
+   Use the `signtool` utility (available in the Windows SDK) to verify the signature:
+
+   ```bash
+   signtool verify /pa /v duptool.exe
+   ```
+
+   This command checks the signature against the public certificate and confirms the binary's integrity.
+
+*Note: Since the certificate is self-signed, Windows may not recognize it as trusted by default. Users can manually install the `duptool_public.cer` certificate into their Trusted Root Certification Authorities store to establish trust.*
 
 ---
 
