@@ -2,7 +2,7 @@
 
 **Advanced and efficient folder comparison tool**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 `duptool` is a high-performance utility for finding duplicate files between two folders, optimized for speed, accuracy, and practical workflows. Unlike tools like Total Commander, `duptool` focuses on comparing **only between folders**, with advanced filtering and hashing strategies.
 
