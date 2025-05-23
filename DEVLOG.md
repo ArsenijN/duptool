@@ -3,6 +3,22 @@ I keep all changes here, so versions can be easily compared between themself
 
 ---
 
+## Changes: V0.1.8
+- **Progress bars improved:** Now both group and file progress are shown using two bars (via indicatif's MultiProgress).
+- **ETA and speed reporting:** ETA and speed are updated more frequently and displayed for both progress bars.
+- **Debug output:** More detailed debug output for file moving and error handling, especially in delete/force-delete modes.
+- **Code structure:** Minor improvements to code structure and comments for clarity.
+- **Version bump to 1.8.**
+
+## Changes: V0.1.7
+- **Quick check logic is now fully correct and explicit:**
+  - If only `-C` is used (no `-A`/`-E`): only the first and last 8MB are compared, and results are based solely on this quick check (no full hash is performed).
+  - If `-C` is used together with `-A` or `-E`: files are first filtered by quick check, then all candidates are fully hashed (full content hash).
+  - If `-A`/`-E` are used without `-C`: all files are always fully hashed (no quick check).
+- Results for only `-C` are based on quick check only, never full hash.
+- Improved code comments and structure for clarity.
+- Version bump to 1.7.
+
 ## Changes: V0.1.6
 - Fixed logic for "-C" (quick check) with "-E"/"-A": now files are first filtered by 8MB chunk comparison, only those that pass are grouped for full hash comparison.
 - After quick check, **full hash is always performed** for all files in candidate groups, regardless of `-C` flag, ensuring correct duplicate detection and consistent performance.

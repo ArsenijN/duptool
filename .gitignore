@@ -1,2 +1,6 @@
 /target
 Cargo.lock
+duptool_cert_password.txt
+sign_config.json
+build_and_sign.bat
+sign_release_enhanced.ps1

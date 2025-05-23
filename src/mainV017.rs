@@ -1,5 +1,5 @@
 use clap::{Arg, ArgAction, Command};
-use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
+use indicatif::{ProgressBar, ProgressStyle};
 use md5::Context; // Use Context instead of Md5
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, create_dir_all, rename};
@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
     
     // Parse command line arguments
     let matches = Command::new("duptool")
-        .version("1.8")
+        .version("1.7")
         .author("ArsenijN")
         .about("Finds duplicate files across directories")
         .arg(
@@ -321,39 +321,14 @@ fn find_duplicates(
 
     if options.quick_content_check && !(options.async_compare || options.enhanced_async) {
         // Only -C: compare only first and last 8MB, never full hash
-
-        // --- Progress bar for quick check only mode ---
-        let total_groups = name_filtered_groups.len();
-        let total_files: u64 = name_filtered_groups.iter().map(|g| g.len() as u64).sum();
-
-        let m = MultiProgress::new();
-
-        // Group progress bar
-        let progress_bar = m.add(ProgressBar::new(total_groups as u64));
-        progress_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
-
-        // File progress bar
-        let file_progress = m.add(ProgressBar::new(total_files));
-        file_progress.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
-
-        let mut processed_files = 0u64;
-
         quick_checked_groups = name_filtered_groups
             .into_iter()
-            .enumerate()
-            .flat_map(|(idx, group)| {
-                progress_bar.inc(1);
+            .flat_map(|group| {
                 let mut quick_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
                 for file in &group {
                     if let Some(h) = calculate_file_hash(file, true).ok().flatten() {
                         quick_hash_map.entry(h).or_default().push(file.clone());
                     }
-                    processed_files += 1;
-                    file_progress.inc(1);
                 }
                 quick_hash_map
                     .into_values()
@@ -361,8 +336,6 @@ fn find_duplicates(
                     .collect::<Vec<Vec<FileInfo>>>()
             })
             .collect();
-        progress_bar.finish();
-        file_progress.finish();
         println!("After quick check: {} groups remain", quick_checked_groups.len());
 
         // Output results based on quick check only, no full hash
@@ -383,7 +356,6 @@ fn find_duplicates(
     // If -C and -A/-E: filter by quick check, then do full hash for those that match
     if options.quick_content_check && (options.async_compare || options.enhanced_async) {
         quick_checked_groups = name_filtered_groups
-            .clone()
             .into_iter()
             .flat_map(|group| {
                 let mut quick_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
@@ -406,90 +378,22 @@ fn find_duplicates(
 
     if options.compare_content {
         let total_groups = quick_checked_groups.len();
-        let total_files: u64 = quick_checked_groups.iter().map(|g| g.len() as u64).sum();
-
-        // --- Use MultiProgress for two progress bars ---
-        let m = MultiProgress::new();
-
-        // Group progress bar (per group)
-        let progress_bar = m.add(ProgressBar::new(total_groups as u64));
+        let progress_bar = ProgressBar::new(total_groups as u64);
         progress_bar.set_style(ProgressStyle::default_bar()
             .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
 
-        // File progress bar (per file)
-        let file_progress = m.add(ProgressBar::new(total_files));
-        file_progress.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
-
-        // Run the comparison in a closure so we can join the progress bars after
-        let result = if options.async_compare || options.enhanced_async {
+        // If -A or -E, do async/enhanced async content compare (with or without quick check as above)
+        if options.async_compare || options.enhanced_async {
             let mut full_hash_options = options.clone();
             full_hash_options.quick_content_check = false;
-            let m = &m;
-            let progress_bar = progress_bar.clone();
-            let file_progress = file_progress.clone();
-            std::thread::spawn(move || {
-                async_content_compare_with_file_progress(
-                    quick_checked_groups, full_hash_options, progress_bar, file_progress
-                )
-            })
+            duplicates = async_content_compare(quick_checked_groups, full_hash_options, progress_bar)?;
         } else {
+            // If not -A/-E, always use full hash (unless only -C, which is handled above)
             let mut full_hash_options = options.clone();
             full_hash_options.quick_content_check = false;
-            let m = &m;
-            let progress_bar = progress_bar.clone();
-            let file_progress = file_progress.clone();
-            std::thread::spawn(move || {
-                sync_content_compare_with_file_progress(
-                    quick_checked_groups, &full_hash_options, progress_bar, file_progress
-                )
-            })
-        };
-
-        // Wait for both progress bars to finish
-        // Fallback for indicatif versions without join_and_clear/join:
-        duplicates = result.join().unwrap()?;
-        m.clear().unwrap();
-    } else if options.quick_content_check && (options.async_compare || options.enhanced_async) && !options.compare_content {
-        // Show a progress bar for the async quick check (when -C and -A/-E, but not --content)
-        let total_groups = quick_checked_groups.len();
-        let total_files: u64 = quick_checked_groups.iter().map(|g| g.len() as u64).sum();
-
-        let m = MultiProgress::new();
-        let group_bar = m.add(ProgressBar::new(total_groups as u64));
-        group_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} groups (finalizing) {eta}")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
-
-        let file_bar = m.add(ProgressBar::new(total_files));
-        file_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files (finalizing) {eta}")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
-
-        let mut processed_files = 0u64;
-        let mut final_duplicates = Vec::new();
-
-        for group in quick_checked_groups {
-            group_bar.inc(1);
-            for _ in &group {
-                processed_files += 1;
-                file_bar.inc(1);
-            }
-            if !group.is_empty() {
-                let mut files_by_folder = vec![Vec::new(), Vec::new()];
-                let size = group[0].size;
-                for file in group {
-                    files_by_folder[file.folder_index].push(file.path);
-                }
-                final_duplicates.push(DuplicateGroup { files_by_folder, size });
-            }
+            duplicates = sync_content_compare(quick_checked_groups, &full_hash_options, progress_bar)?;
         }
-        group_bar.finish();
-        file_bar.finish();
-        m.clear().unwrap();
-        return Ok(final_duplicates);
     } else {
         // If no content comparison, just convert to duplicate groups
         for group in quick_checked_groups {
@@ -614,90 +518,13 @@ fn sync_content_compare(
     Ok(duplicates)
 }
 
-// New: sync_content_compare_with_file_progress
-fn sync_content_compare_with_file_progress(
-    groups: Vec<Vec<FileInfo>>,
-    options: &CompareOptions,
-    progress_bar: ProgressBar,
-    file_progress: ProgressBar,
-) -> io::Result<Vec<DuplicateGroup>> {
-    let mut duplicates = Vec::new();
-    let mut total_size_processed: u64 = 0;
-    let mut total_time_taken: f64 = 0.0;
-    let mut last_eta_update = Instant::now();
-    let eta_update_interval = std::time::Duration::from_millis(500);
-
-    let total_size: u64 = groups.iter().flat_map(|g| g.iter()).map(|f| f.size).sum();
-    let start_time = Instant::now();
-
-    for group in &groups {
-        progress_bar.inc(1);
-
-        if group.len() <= 1 {
-            continue;
-        }
-
-        let group_size: u64 = group.iter().map(|file| file.size).sum();
-        let mut content_groups: HashMap<String, Vec<FileInfo>> = HashMap::new();
-
-        for file in group {
-            match calculate_file_hash(file, options.quick_content_check)? {
-                Some(hash) => {
-                    content_groups.entry(hash).or_default().push(file.clone());
-                },
-                None => continue,
-            }
-            // Update processed size and ETA more frequently (per file)
-            total_size_processed += file.size;
-            file_progress.inc(1);
-            if last_eta_update.elapsed() >= eta_update_interval {
-                let elapsed = start_time.elapsed().as_secs_f64();
-                let avg_speed = if elapsed > 0.0 { total_size_processed as f64 / elapsed } else { 0.0 };
-                let remaining_size = total_size.saturating_sub(total_size_processed);
-                let eta = if avg_speed > 0.0 { remaining_size as f64 / avg_speed } else { 0.0 };
-                progress_bar.set_message(format!(
-                    "ETA: {:.1}s (processed: {:.2} GB, remaining: {:.2} GB, speed: {:.2} MB/s)",
-                    eta,
-                    total_size_processed as f64 / (1024.0 * 1024.0 * 1024.0),
-                    remaining_size as f64 / (1024.0 * 1024.0 * 1024.0),
-                    avg_speed / (1024.0 * 1024.0)
-                ));
-                last_eta_update = Instant::now();
-            }
-        }
-
-        for (_, content_group) in content_groups {
-            if content_group.len() > 1 && 
-               (!options.bidirectional || has_files_from_both_folders(&content_group)) {
-                let mut files_by_folder = vec![Vec::new(), Vec::new()];
-
-                for file in content_group {
-                    files_by_folder[file.folder_index].push(file.path);
-                }
-
-                duplicates.push(DuplicateGroup { 
-                    files_by_folder, 
-                    size: group_size 
-                });
-            }
-        }
-    }
-
-    progress_bar.finish();
-    file_progress.finish();
-    Ok(duplicates)
-}
-
-// New: async_content_compare_with_file_progress
-fn async_content_compare_with_file_progress(
+fn async_content_compare(
     groups: Vec<Vec<FileInfo>>, 
     options: CompareOptions, 
-    progress_bar: ProgressBar,
-    file_progress: ProgressBar,
+    progress_bar: ProgressBar
 ) -> io::Result<Vec<DuplicateGroup>> {
     let duplicates = Arc::new(Mutex::new(Vec::new()));
     let progress = Arc::new(progress_bar);
-    let file_progress = Arc::new(file_progress);
 
     let total_size: u64 = groups.iter().flat_map(|g| g.iter()).map(|f| f.size).sum();
     let processed_size = Arc::new(Mutex::new(0u64));
@@ -713,7 +540,6 @@ fn async_content_compare_with_file_progress(
     for chunk in chunks {
         let duplicates = Arc::clone(&duplicates);
         let progress = Arc::clone(&progress);
-        let file_progress = Arc::clone(&file_progress);
         let options = options.clone();
         let processed_size = Arc::clone(&processed_size);
         let last_eta_update = Arc::clone(&last_eta_update);
@@ -722,6 +548,7 @@ fn async_content_compare_with_file_progress(
             for group in chunk {
                 progress.inc(1);
 
+                // Only process groups with files from both folders
                 if group.len() <= 1 || !has_files_from_both_folders(&group) {
                     continue;
                 }
@@ -740,7 +567,6 @@ fn async_content_compare_with_file_progress(
                     {
                         let mut sz = processed_size.lock().unwrap();
                         *sz += file.size;
-                        file_progress.inc(1);
                         let mut last = last_eta_update.lock().unwrap();
                         if last.elapsed() >= eta_update_interval {
                             let elapsed = start_time.elapsed().as_secs_f64();
@@ -762,6 +588,7 @@ fn async_content_compare_with_file_progress(
                 let mut local_duplicates = Vec::new();
 
                 for (_, content_group) in content_groups {
+                    // Only keep groups with files from both folders
                     if content_group.len() > 1 && has_files_from_both_folders(&content_group) {
                         let mut files_by_folder = vec![Vec::new(), Vec::new()];
 
@@ -793,7 +620,6 @@ fn async_content_compare_with_file_progress(
     }
 
     progress.finish();
-    file_progress.finish();
 
     let result = Arc::try_unwrap(duplicates)
         .expect("Still have multiple owners of duplicates")
