@@ -147,6 +147,16 @@ To verify the signature:
 
 ---
 
+**Cross-platform note**
+
+- `duptool` is cross-platform (Linux, macOS, Windows). On Linux and other Unix-like systems moving files between different mounted filesystems may require a copy+remove fallback instead of a simple rename; the tool now uses a safe fallback so `-D`/`--delete` behavior works across mounts.
+
+**Developer notes**
+
+Developer-focused signing and CI instructions were moved to `DEVNOTES.md`. See that file for guidance on creating checksums, GPG detached signatures and optional Authenticode signing for Windows releases.
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
@@ -168,3 +178,5 @@ Planned improvements include:
 ## 📜 Changelog
 
 See [DEVLOG.md](DEVLOG.md) for version history and detailed changes.
+
+**Note:** Starting from v0.1.10, the complete code history and changes can be tracked via the git timeline in the main branch.

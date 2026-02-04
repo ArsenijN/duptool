@@ -48,7 +48,7 @@ fn main() -> io::Result<()> {
     
     // Parse command line arguments
     let matches = Command::new("duptool")
-        .version("0.1.10") // Version bump
+        .version("1.9") // Version bump
         .author("ArsenijN")
         .about("Finds duplicate files across directories")
         .arg(
@@ -1018,72 +1018,34 @@ fn move_duplicates_to_deleted(
                 println!("Target path: {}", target_path.display());
             }
 
+            // Create parent directories in the "deleted" folder
+            if let Some(parent) = target_path.parent() {
+                if options.debug {
+                    println!("Ensuring parent directories exist for: {}", parent.display());
+                }
+                create_dir_all(parent)?;
+            }
+
             // Only check for corresponding_path if not force_delete
             if !options.force_delete {
                 let corresponding_path = sanitize_path(&Path::new(folder2).join(relative_path));
                 if !corresponding_path.exists() {
                     if options.debug {
                         println!("File does not exist in folder2: {}", corresponding_path.display());
-                        println!("Skipping file (use -F to force delete regardless of folder2 path)");
                     }
                     continue;
                 }
             }
 
-            // Create parent directories in the "deleted" folder
-            if let Some(parent) = target_path.parent() {
+            // Move the file
+            if let Err(e) = rename(&sanitized_file_path, &target_path) {
                 if options.debug {
-                    println!("Ensuring parent directories exist for: {}", parent.display());
+                    eprintln!("Error moving file: {} -> {}: {}", sanitized_file_path.display(), target_path.display(), e);
                 }
-                if let Err(e) = create_dir_all(parent) {
-                    eprintln!("Failed to create directory {}: {}", parent.display(), e);
-                    continue;
-                }
+                return Err(e);
             }
 
-            // Verify source file exists before attempting move
-            if !sanitized_file_path.exists() {
-                if options.debug {
-                    eprintln!("Source file does not exist: {}", sanitized_file_path.display());
-                }
-                continue;
-            }
-
-            // Try rename first (fast, atomic operation if on same filesystem)
-            // Falls back to copy+remove only if rename fails (cross-device, etc.)
-            match rename(&sanitized_file_path, &target_path) {
-                Ok(_) => {
-                    if options.debug {
-                        println!("File moved successfully using rename()");
-                    }
-                    println!("Moved: {}", sanitized_file_path.display());
-                }
-                Err(e) => {
-                    if options.debug {
-                        eprintln!("Rename failed: {} -> {}: {}", sanitized_file_path.display(), target_path.display(), e);
-                        
-                        // Check if it's a cross-device error
-                        #[cfg(unix)]
-                        if let Some(code) = e.raw_os_error() {
-                            if code == 18 {
-                                println!("Cross-device move detected (EXDEV); falling back to copy+remove");
-                            } else {
-                                println!("Rename failed with error code {}; falling back to copy+remove", code);
-                            }
-                        }
-                        
-                        #[cfg(not(unix))]
-                        println!("Falling back to copy+remove");
-                    }
-                    
-                    // Fallback to verified copy+remove
-                    if let Err(copy_err) = copy_and_remove(&sanitized_file_path, &target_path, options) {
-                        eprintln!("Failed to move file {} to {}: {}", sanitized_file_path.display(), target_path.display(), copy_err);
-                        continue;
-                    }
-                    println!("Moved: {}", sanitized_file_path.display());
-                }
-            }
+            println!("Moved: {}", sanitized_file_path.display());
         }
     }
 
@@ -1110,92 +1072,6 @@ fn sanitize_path<P: AsRef<Path>>(path: P) -> PathBuf {
         }
     }
     sanitized
-}
-
-fn copy_and_remove(src: &Path, dst: &Path, options: &CompareOptions) -> io::Result<()> {
-    if options.debug {
-        println!("Copying file as fallback: {} -> {}", src.display(), dst.display());
-    }
-
-    // Get source metadata before copying (for verification and preservation)
-    let src_metadata = src.metadata()?;
-    let src_size = src_metadata.len();
-    let src_perms = src_metadata.permissions();
-    
-    // Store timestamps for preservation
-    let src_atime = src_metadata.accessed().ok();
-    let src_mtime = src_metadata.modified().ok();
-
-    // Perform copy
-    let bytes_copied = std::fs::copy(src, dst)?;
-
-    // CRITICAL: Verify that the copy was complete before removing original
-    if bytes_copied != src_size {
-        // Copy didn't complete fully - DO NOT remove original file
-        let err_msg = format!(
-            "Copy verification failed: expected {} bytes, got {} bytes. Original file preserved at {}",
-            src_size, bytes_copied, src.display()
-        );
-        eprintln!("ERROR: {}", err_msg);
-        // Clean up the incomplete destination file
-        let _ = std::fs::remove_file(dst);
-        return Err(io::Error::new(io::ErrorKind::Other, err_msg));
-    }
-
-    // Verify destination file exists and has correct size
-    match dst.metadata() {
-        Ok(dst_metadata) => {
-            if dst_metadata.len() != src_size {
-                let err_msg = format!(
-                    "Destination file size mismatch: expected {} bytes, got {} bytes. Original file preserved at {}",
-                    src_size, dst_metadata.len(), src.display()
-                );
-                eprintln!("ERROR: {}", err_msg);
-                let _ = std::fs::remove_file(dst);
-                return Err(io::Error::new(io::ErrorKind::Other, err_msg));
-            }
-        }
-        Err(e) => {
-            let err_msg = format!(
-                "Cannot verify destination file: {}. Original file preserved at {}",
-                e, src.display()
-            );
-            eprintln!("ERROR: {}", err_msg);
-            return Err(io::Error::new(io::ErrorKind::Other, err_msg));
-        }
-    }
-
-    if options.debug {
-        println!("Copy verified: {} bytes successfully copied", bytes_copied);
-    }
-
-    // Preserve permissions - warn if this fails but don't abort
-    if let Err(e) = std::fs::set_permissions(dst, src_perms) {
-        if options.debug {
-            eprintln!("Warning: Failed to preserve permissions on {}: {}", dst.display(), e);
-        }
-    }
-
-    // Preserve timestamps - warn if this fails but don't abort
-    if let (Some(atime), Some(mtime)) = (src_atime, src_mtime) {
-        let fa = filetime::FileTime::from_system_time(atime);
-        let fm = filetime::FileTime::from_system_time(mtime);
-        if let Err(e) = filetime::set_file_times(dst, fa, fm) {
-            if options.debug {
-                eprintln!("Warning: Failed to preserve timestamps on {}: {}", dst.display(), e);
-            }
-        } else if options.debug {
-            println!("Timestamps preserved successfully");
-        }
-    }
-
-    // Only now, after all verifications pass, remove the original file
-    if options.debug {
-        println!("Verification complete, removing original file: {}", src.display());
-    }
-    std::fs::remove_file(src)?;
-
-    Ok(())
 }
 
 fn to_long_path<P: AsRef<Path>>(path: P) -> PathBuf {

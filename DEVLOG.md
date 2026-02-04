@@ -1,6 +1,25 @@
 # DEVLOG
 I keep all changes here, so versions can be easily compared between themself
 
+**Note:** Starting from v0.1.10, the full version history can be traced via git timeline in the main branch.
+
+---
+
+## Changes: V0.1.10
+- **CRITICAL FIX for Linux:** Fixed file deletion/moving functionality on Linux systems. The previous version only created folder structure but didn't actually move files.
+- **PERFORMANCE: Smart move strategy:** Now tries fast `rename()` first (atomic operation), only falls back to copy+remove when needed (cross-device moves). This makes same-filesystem moves nearly instantaneous instead of copying entire files.
+- **Improved cross-device move handling:** Automatically detects cross-device errors (EXDEV on Unix) and seamlessly falls back to verified copy+remove.
+- **CRITICAL SAFETY: Copy verification before deletion:** Added comprehensive verification that copy completed successfully before removing original file. Checks include:
+  - Byte count verification (bytes_copied matches source file size)
+  - Destination file existence and size verification
+  - If any verification fails, destination file is cleaned up and original file is preserved
+- **Guaranteed timestamp preservation:** Timestamps (atime/mtime) are now properly preserved with error reporting if preservation fails (non-fatal).
+- **Guaranteed permission preservation:** File permissions are preserved with warning if it fails (non-fatal).
+- **Better error handling:** Added verification that source file exists before attempting move, improved error messages, and more robust directory creation with proper error checking.
+- **Enhanced debug output:** Added more helpful debug messages including suggestion to use `-F` flag when files don't exist in folder2, plus verification status messages and move method indicators.
+- **Code refactoring:** Unified move logic for all platforms - try rename first, fall back to copy+remove on any error.
+- **Version bump to 0.1.10.**
+
 ---
 
 ## Changes: V0.1.9

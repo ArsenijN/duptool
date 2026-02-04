@@ -1,0 +1,1 @@
+- [x] ~~Currently seems like Linux have an issues with delete of the files (move function)~~ @20260204_211900 - **FIXED in v0.1.10**
