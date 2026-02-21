@@ -2,11 +2,11 @@ use clap::{Arg, ArgAction, Command};
 use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
 use md5::Context; // Use Context instead of Md5
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, File, create_dir_all, rename};
+use std::fs::{File, create_dir_all, rename};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread::{self};
 use std::time::Instant;
 use walkdir::WalkDir;
 
@@ -25,7 +25,9 @@ struct CompareOptions {
     compare_name: bool,
     compare_size: bool,
     quick_content_check: bool,
+    #[allow(dead_code)]  // Reserved for future Everything integration
     everything_name: bool,
+    #[allow(dead_code)]  // Reserved for future Everything integration
     everything_size: bool,
     bidirectional: bool,
     async_compare: bool,
@@ -48,9 +50,34 @@ fn main() -> io::Result<()> {
     
     // Parse command line arguments
     let matches = Command::new("duptool")
-        .version("0.1.10") // Version bump
-        .author("ArsenijN")
-        .about("Finds duplicate files across directories")
+        .version(env!("CARGO_PKG_VERSION"))
+        .author(env!("CARGO_PKG_AUTHORS"))
+        .about("Advanced duplicate file finder with smart comparison strategies")
+        .long_about(concat!(
+            "duptool - Advanced duplicate file finder\n\n",
+            "Fast, efficient tool for finding duplicate files across directories.\n",
+            "Features: async processing, HDD optimization, quick content check,\n",
+            "safe file deletion, and cross-device move support.\n\n",
+            "Version: ", env!("CARGO_PKG_VERSION"), "\n",
+            "Author: ", env!("CARGO_PKG_AUTHORS"), "\n",
+            "Repository: ", env!("CARGO_PKG_REPOSITORY")
+        ))
+        .after_help("Use -h for compact help, --help for detailed help.\nUse -v for version, -V for detailed version.")
+        .disable_version_flag(true)  // Disable default -V so we can customize
+        .arg(
+            Arg::new("version")
+                .short('v')
+                .long("version")
+                .help("Print version")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("verbose_version")
+                .short('V')
+                .long("verbose-version")
+                .help("Print detailed version information")
+                .action(ArgAction::SetTrue),
+        )
         .arg(
             Arg::new("folder1")
                 .required(true)
@@ -176,6 +203,24 @@ fn main() -> io::Result<()> {
                 .action(ArgAction::SetTrue),
         )
         .get_matches();
+
+    // Handle version flags
+    if matches.get_flag("version") {
+        println!("duptool {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    
+    if matches.get_flag("verbose_version") {
+        println!("duptool {}", option_env!("FULL_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")));
+        println!("Build date: {}", option_env!("BUILD_DATE").unwrap_or("unknown"));
+        println!("Build number: {}", option_env!("BUILD_NUMBER").unwrap_or("0"));
+        println!("Git commit: {}", option_env!("GIT_HASH").unwrap_or("unknown"));
+        println!();
+        println!("Author: {}", env!("CARGO_PKG_AUTHORS"));
+        println!("Repository: {}", env!("CARGO_PKG_REPOSITORY"));
+        println!("License: MIT");
+        return Ok(());
+    }
 
     let single_mode = matches.get_flag("single");
     let folder1 = matches.get_one::<String>("folder1").unwrap();
@@ -382,7 +427,7 @@ fn find_duplicates(
         quick_checked_groups = name_filtered_groups
             .into_iter()
             .enumerate()
-            .flat_map(|(idx, group)| {
+            .flat_map(|(_idx, group)| {
                 progress_bar.inc(1);
                 let mut quick_hash_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
                 for file in &group {
@@ -464,7 +509,6 @@ fn find_duplicates(
         let result = if options.async_compare || options.enhanced_async {
             let mut full_hash_options = options.clone();
             full_hash_options.quick_content_check = false;
-            let m = &m;
             let progress_bar = progress_bar.clone();
             let file_progress = file_progress.clone();
             std::thread::spawn(move || {
@@ -475,7 +519,6 @@ fn find_duplicates(
         } else {
             let mut full_hash_options = options.clone();
             full_hash_options.quick_content_check = false;
-            let m = &m;
             let progress_bar = progress_bar.clone();
             let file_progress = file_progress.clone();
             std::thread::spawn(move || {
@@ -505,13 +548,11 @@ fn find_duplicates(
             .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files (finalizing) {eta}")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
 
-        let mut processed_files = 0u64;
         let mut final_duplicates = Vec::new();
 
         for group in quick_checked_groups {
             group_bar.inc(1);
             for _ in &group {
-                processed_files += 1;
                 file_bar.inc(1);
             }
             if !group.is_empty() {
@@ -577,6 +618,7 @@ fn group_by_name(files: &[FileInfo]) -> Vec<Vec<FileInfo>> {
     name_groups.into_values().collect()
 }
 
+#[allow(dead_code)]
 fn sync_content_compare(
     groups: Vec<Vec<FileInfo>>,
     options: &CompareOptions,
@@ -584,15 +626,13 @@ fn sync_content_compare(
 ) -> io::Result<Vec<DuplicateGroup>> {
     let mut duplicates = Vec::new();
     let mut total_size_processed: u64 = 0;
-    let mut total_time_taken: f64 = 0.0;
     let mut last_eta_update = Instant::now();
     let eta_update_interval = std::time::Duration::from_millis(500); // update ETA every 0.5s
 
     let total_size: u64 = groups.iter().flat_map(|g| g.iter()).map(|f| f.size).sum();
     let start_time = Instant::now();
 
-    for (index, group) in groups.iter().enumerate() {
-        let group_start_time = Instant::now();
+    for group in groups.iter() {
         progress_bar.inc(1);
 
         if group.len() <= 1 {
@@ -642,9 +682,6 @@ fn sync_content_compare(
                 });
             }
         }
-
-        // Update total time taken for group (for compatibility with old logic)
-        total_time_taken += group_start_time.elapsed().as_secs_f64();
     }
 
     progress_bar.finish();
@@ -660,7 +697,6 @@ fn sync_content_compare_with_file_progress(
 ) -> io::Result<Vec<DuplicateGroup>> {
     let mut duplicates = Vec::new();
     let mut total_size_processed: u64 = 0;
-    let mut total_time_taken: f64 = 0.0;
     let mut last_eta_update = Instant::now();
     let eta_update_interval = std::time::Duration::from_millis(500);
 
@@ -756,6 +792,10 @@ fn async_content_compare_with_file_progress(
         let last_eta_update = Arc::clone(&last_eta_update);
 
         let handle = thread::spawn(move || -> io::Result<()> {
+            // Local counters to reduce lock contention
+            let mut local_processed_size = 0u64;
+            let mut files_processed = 0u64;
+            
             for group in chunk {
                 progress.inc(1);
 
@@ -773,11 +813,18 @@ fn async_content_compare_with_file_progress(
                         },
                         None => continue,
                     }
-                    // Update processed size and ETA more frequently (per file)
-                    {
+                    
+                    // Update local counters (no locks!)
+                    local_processed_size += file.size;
+                    files_processed += 1;
+                    file_progress.inc(1);
+                    
+                    // Only update shared state occasionally to reduce lock contention
+                    if files_processed % 10 == 0 {  // Update every 10 files instead of every file
                         let mut sz = processed_size.lock().unwrap();
-                        *sz += file.size;
-                        file_progress.inc(1);
+                        *sz += local_processed_size;
+                        local_processed_size = 0;  // Reset local counter
+                        
                         let mut last = last_eta_update.lock().unwrap();
                         if last.elapsed() >= eta_update_interval {
                             let elapsed = start_time.elapsed().as_secs_f64();
@@ -818,6 +865,12 @@ fn async_content_compare_with_file_progress(
                     all_duplicates.extend(local_duplicates);
                 }
             }
+            
+            // Flush any remaining local counter at the end
+            if local_processed_size > 0 {
+                let mut sz = processed_size.lock().unwrap();
+                *sz += local_processed_size;
+            }
 
             Ok(())
         });
@@ -841,12 +894,13 @@ fn async_content_compare_with_file_progress(
 }
 
 // Helper: process files for one folder independently
+#[allow(dead_code)]
 fn process_files_independent(
     files: Vec<FileInfo>,
     folder_index: usize,
     duplicates: Arc<Mutex<Vec<DuplicateGroup>>>,
     progress: Arc<ProgressBar>,
-    options: CompareOptions,
+    _options: CompareOptions,
 ) -> io::Result<()> {
     // Group files by size
     let mut size_map: HashMap<u64, Vec<FileInfo>> = HashMap::new();
@@ -882,8 +936,9 @@ fn calculate_file_hash(file: &FileInfo, quick_check: bool) -> io::Result<Option<
     let mut file_handle = File::open(path)?;
     let file_size = file.size;
 
-    // Use a larger buffer size for HDDs to reduce I/O operations
-    let buffer_size = 64 * 1024; // 64 KB buffer
+    // Use a much larger buffer size to reduce I/O system calls
+    // 1MB buffer reduces syscalls dramatically: 100MB file = 100 syscalls instead of 1600
+    let buffer_size = 1024 * 1024; // 1 MB buffer
 
     if quick_check && file_size > QUICKCHECK_SIZE as u64 * 2 {
         let mut hasher = Context::new();
@@ -905,7 +960,7 @@ fn calculate_file_hash(file: &FileInfo, quick_check: bool) -> io::Result<Option<
         Ok(Some(format!("{:x}", result)))
     } else {
         let mut hasher = Context::new();
-        let mut buffer = vec![0; buffer_size]; // Use larger buffer
+        let mut buffer = vec![0; buffer_size]; // Use 1MB buffer
 
         loop {
             let bytes_read = file_handle.read(&mut buffer)?;
@@ -932,6 +987,7 @@ fn split_into_chunks<T: Clone>(items: Vec<T>, chunk_count: usize, hdd_optimized:
     chunks
 }
 
+#[allow(dead_code)]
 fn process_groups(
     groups: Vec<Vec<FileInfo>>, 
     duplicates: Arc<Mutex<Vec<DuplicateGroup>>>, 
@@ -1198,6 +1254,7 @@ fn copy_and_remove(src: &Path, dst: &Path, options: &CompareOptions) -> io::Resu
     Ok(())
 }
 
+#[allow(dead_code)]
 fn to_long_path<P: AsRef<Path>>(path: P) -> PathBuf {
     let path = path.as_ref();
     if cfg!(windows) {

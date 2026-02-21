@@ -1,0 +1,61 @@
+Total DISK READ:        77.98 M/s | Total DISK WRITE:       376.38 K/s
+Current DISK READ:      77.98 M/s | Current DISK WRITE:     376.38 K/s
+    TID  PRIO  USER    DISK READ>  DISK WRITE    COMMAND                                                                                                                                                                                    
+  50320 be/4 arsen      31.53 M/s    0.00 B/s ./duptool -BDEX /home/arsen/Downloads/music lib (save only how the files called)/Music /media/arsen/переноска/Music (latest)/Music
+  50321 be/4 arsen      27.37 M/s    0.00 B/s ./duptool -BDEX /home/arsen/Downloads/music lib (save only how the files called)/Music /media/arsen/переноска/Music (latest)/Music
+  50322 be/4 arsen      14.17 M/s    0.00 B/s ./duptool -BDEX /home/arsen/Downloads/music lib (save only how the files called)/Music /media/arsen/переноска/Music (latest)/Music
+  50323 be/4 arsen       4.91 M/s    0.00 B/s ./duptool -BDEX /home/arsen/Downloads/music lib (save only how the files called)/Music /media/arsen/переноска/Music (latest)/Music
+      1 be/4 root        0.00 B/s    0.00 B/s init splash
+      2 be/4 root        0.00 B/s    0.00 B/s [kthreadd]
+      3 be/4 root        0.00 B/s    0.00 B/s [pool_workqueue_release]
+      4 be/0 root        0.00 B/s    0.00 B/s [kworker/R-rcu_gp]
+      5 be/0 root        0.00 B/s    0.00 B/s [kworker/R-sync_wq]
+      6 be/0 root        0.00 B/s    0.00 B/s [kworker/R-kvfree_rcu_reclaim]
+      7 be/0 root        0.00 B/s    0.00 B/s [kworker/R-slub_flushwq]
+      8 be/0 root        0.00 B/s    0.00 B/s [kworker/R-netns]
+     10 be/0 root        0.00 B/s    0.00 B/s [kworker/0:0H-events_highpri]
+     13 be/0 root        0.00 B/s    0.00 B/s [kworker/R-mm_percpu_wq]
+     14 be/4 root        0.00 B/s    0.00 B/s [rcu_tasks_kthread]
+     15 be/4 root        0.00 B/s    0.00 B/s [rcu_tasks_rude_kthread]
+     16 be/4 root        0.00 B/s    0.00 B/s [rcu_tasks_trace_kthread]
+     17 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/0]
+     18 be/4 root        0.00 B/s    0.00 B/s [rcu_preempt]
+     19 be/4 root        0.00 B/s    0.00 B/s [rcu_exp_par_gp_kthread_worker/0]
+     20 be/4 root        0.00 B/s    0.00 B/s [rcu_exp_gp_kthread_worker]
+     21 rt/4 root        0.00 B/s    0.00 B/s [migration/0]
+     22 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/0]
+     23 be/4 root        0.00 B/s    0.00 B/s [cpuhp/0]
+     24 be/4 root        0.00 B/s    0.00 B/s [cpuhp/1]
+     25 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/1]
+     26 rt/4 root        0.00 B/s    0.00 B/s [migration/1]
+     27 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/1]
+     29 be/0 root        0.00 B/s    0.00 B/s [kworker/1:0H-events_highpri]
+     30 be/4 root        0.00 B/s    0.00 B/s [cpuhp/2]
+     31 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/2]
+     32 rt/4 root        0.00 B/s    0.00 B/s [migration/2]
+     33 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/2]
+     35 be/0 root        0.00 B/s    0.00 B/s [kworker/2:0H-events_highpri]
+     36 be/4 root        0.00 B/s    0.00 B/s [cpuhp/3]
+     37 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/3]
+     38 rt/4 root        0.00 B/s    0.00 B/s [migration/3]
+     39 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/3]
+     41 be/0 root        0.00 B/s    0.00 B/s [kworker/3:0H-events_highpri]
+     42 be/4 root        0.00 B/s    0.00 B/s [cpuhp/4]
+     43 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/4]
+     44 rt/4 root        0.00 B/s    0.00 B/s [migration/4]
+     45 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/4]
+     47 be/0 root        0.00 B/s    0.00 B/s [kworker/4:0H-events_highpri]
+     48 be/4 root        0.00 B/s    0.00 B/s [cpuhp/5]
+     49 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/5]
+     50 rt/4 root        0.00 B/s    0.00 B/s [migration/5]
+     51 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/5]
+     53 be/0 root        0.00 B/s    0.00 B/s [kworker/5:0H-events_highpri]
+     54 be/4 root        0.00 B/s    0.00 B/s [cpuhp/6]
+     55 rt/4 root        0.00 B/s    0.00 B/s [idle_inject/6]
+     56 rt/4 root        0.00 B/s    0.00 B/s [migration/6]
+     57 be/4 root        0.00 B/s    0.00 B/s [ksoftirqd/6]
+     59 be/0 root        0.00 B/s    0.00 B/s [kworker/6:0H-events_highpri]
+     60 be/4 root        0.00 B/s    0.00 B/s [cpuhp/7]
+  keys:  any: refresh  q: quit  i: ionice  o: active  p: procs  a: accum                                                                                                                                                                    
+  sort:  r: asc  left: USER  right: DISK WRITE  home: TID  end: COMMAND                                                                                                                                                                     
+CONFIG_TASK_DELAY_ACCT and kernel.task_delayacct sysctl not enabled in kernel, cannot determine SWAPIN and IO %

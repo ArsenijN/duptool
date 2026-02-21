@@ -1,9 +1,14 @@
 [package]
 name = "duptool"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
-authors = ["ArsenijN"]
-description = "A tool for finding duplicate files across directories"
+authors = ["Arsenii Nochevnyi <arsenijnochevnyj@gmail.com>"]
+description = "Advanced duplicate file finder with smart comparison strategies"
+license = "MIT"
+repository = "https://github.com/ArsenijN/duptool"
+readme = "README.md"
+keywords = ["duplicate", "files", "comparison", "filesystem", "tool"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 clap = { version = "4.0", features = ["derive", "cargo"] }
@@ -12,3 +17,6 @@ md5 = "0.7"
 indicatif = "0.17"
 num_cpus = "1.15"
 filetime = "0.2"
+
+[build-dependencies]
+chrono = "0.4"

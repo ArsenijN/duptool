@@ -1,1 +1,3 @@
 - [x] ~~Currently seems like Linux have an issues with delete of the files (move function)~~ @20260204_211900 - **FIXED in v0.1.10**
+- [ ] Fix a potential mistake with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700
+- [ ] Fix handling of folder with " " (space) at the end in their name (failed to delete, able to compare)

@@ -5,6 +5,13 @@ I keep all changes here, so versions can be easily compared between themself
 
 ---
 
+## Changes: V0.1.11rc1
+- **PERFORMANCE FIX: Eliminated lock contention:** Fixed severe performance bottleneck in async mode where threads were waiting for locks on every file. Now uses local counters and updates shared state only every 10 files, dramatically reducing CPU wait time.
+- **PERFORMANCE FIX: Increased buffer size:** Increased I/O buffer from 64KB to 1MB, reducing system calls by 16x. For a 100MB file: 100 read() calls instead of 1,600.
+- **Version bump to 0.1.11.**
+
+---
+
 ## Changes: V0.1.10
 - **CRITICAL FIX for Linux:** Fixed file deletion/moving functionality on Linux systems. The previous version only created folder structure but didn't actually move files.
 - **PERFORMANCE: Smart move strategy:** Now tries fast `rename()` first (atomic operation), only falls back to copy+remove when needed (cross-device moves). This makes same-filesystem moves nearly instantaneous instead of copying entire files.
@@ -18,9 +25,7 @@ I keep all changes here, so versions can be easily compared between themself
 - **Better error handling:** Added verification that source file exists before attempting move, improved error messages, and more robust directory creation with proper error checking.
 - **Enhanced debug output:** Added more helpful debug messages including suggestion to use `-F` flag when files don't exist in folder2, plus verification status messages and move method indicators.
 - **Code refactoring:** Unified move logic for all platforms - try rename first, fall back to copy+remove on any error.
-- **Version bump to 0.1.10.**
-
----
+- **Version bump to 0.1.10.** Reason: since current state of the `duptool` is not an ready for production, and it still may have or had the problems
 
 ## Changes: V0.1.9
 - **New `-b` / `--intra` flag:** Find duplicates within each folder (intra-folder), as well as between folders.
