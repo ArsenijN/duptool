@@ -1,3 +1,7 @@
 - [x] ~~Currently seems like Linux have an issues with delete of the files (move function)~~ @20260204_211900 - **FIXED in v0.1.10**
-- [ ] Fix a potential mistake with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700
-- [ ] Fix handling of folder with " " (space) at the end in their name (failed to delete, able to compare)
+- [ ] Fix a potential mistake with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **not yet reproduced/confirmed fixed; keep open**
+- [x] ~~Fix handling of folder with " " (space) at the end in their name (failed to delete, able to compare)~~ — **FIXED in v0.1.10-v0.1.12: `sanitize_path` trims trailing spaces via `trim_end_matches(' ')`**
+- [ ] Sort output: currently sorts by first file path (default, added v0.1.12). Add flags for sort by size (`--sort-size`), modification time (`--sort-mtime`), reverse order (`--sort-reverse`)
+- [ ] Fuzzy Mode 2: format-aware metadata skip (JPEG EXIF block, MP4/MOV atoms including trailing atoms) — hash only payload, skip known metadata regions
+- [ ] Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`
+- [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)

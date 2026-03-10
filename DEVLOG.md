@@ -1,7 +1,21 @@
 # DEVLOG
 I keep all changes here, so versions can be easily compared between themself
 
-**Note:** Starting from v0.1.10, the full version history can be traced via git timeline in the main branch.
+**Note:** Starting from v0.1.10, the older version's history can be traced via Git timeline in the `main` branch.
+
+---
+
+## Changes: V0.1.12 (planned)
+- **NEW: Fuzzy comparison mode (`-Z` / `--fuzzy`):** Detects near-duplicate files that differ only in embedded metadata (e.g. JPEG EXIF rotation tag, EXIF `ModifyDate`, GPS metadata stripped by Google Photos from video files). Uses a chunked byte-by-byte comparison that never loads full files into RAM — reads both files simultaneously in 1MB chunks, counting differing bytes across the whole file.
+- **NEW: Byte tolerance threshold (`-t N` / `--tolerance N`):** Specifies how many bytes may differ for a pair to be considered a near-duplicate. Required when `-Z` is used. Always specified separately from combined flags (e.g. `-ABDEZ -t 50`), since `-t` takes a value. Percentage-based threshold planned as `-T` for a future version.
+- **NEW: `differ/` folder:** Fuzzy-matched files from folder1 are moved to a `differ/` subfolder (distinct from `deleted/`), so the user can review them before any destructive action. Semantics: "probably the same content, but not byte-identical — inspect before deciding."
+- **NEW: Fuzzy-as-dupes flag (`-U` / `--fuzzy-as-dupes`):** When specified alongside `-Z`, fuzzy matches are treated exactly like exact duplicates and become eligible for `-D`/`-F` deletion into `deleted/`. Requires `-Z`.
+- **NEW: `MatchKind` enum:** All `DuplicateGroup` instances now carry a `MatchKind` tag (`Exact` or `Fuzzy { bytes_differing }`), enabling distinct display and routing logic.
+- **DISPLAY: Match kind column:** Output table now includes a `match` column showing `EXACT` or `FUZZY ~NB` (where N is the byte diff count), and the summary line reports exact and fuzzy counts separately.
+- **`-C` + `-Z` interaction:** When both flags are active, `-C` acts as a three-way gate — exact quick-hash matches go directly to the normal duplicate pipeline, hash mismatches (which would previously be discarded) become fuzzy candidates, size mismatches are still eliminated. No redundancy.
+- **Planned (not yet implemented):** Format-aware metadata skip mode (Mode 2) — will understand JPEG EXIF blocks and MP4/MOV metadata atoms (including trailing atoms as used in Google Photos video exports) and hash only the payload. Percentage-based threshold (`-T`). Fuzzy as automatic fallback in the normal exact-match pipeline.
+- **Old materials was removed, keeping the only those from the opened ToDo, access them via Git tree**
+- **Version bump to 0.1.12.**
 
 ---
 
@@ -100,7 +114,7 @@ I keep all changes here, so versions can be easily compared between themself
 
 ## TODO
 - [ ] Make ETA even more accurate by smoothing speed over a moving window.
-- [ ] Add option to show progress per file, not just per group. -- What about 2nd bar where it will show processed files instead groups?
+- [x] ~~Add option to show progress per file, not just per group.~~ — **Implemented in v0.1.8** (dual progress bars via `MultiProgress`)
 - [ ] Add more flexible duplicate handling (e.g., interactive mode).
 - [ ] Improve Unicode/path handling for edge cases.
 - [ ] Add tests and CI.

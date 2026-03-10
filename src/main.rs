@@ -36,13 +36,25 @@ struct CompareOptions {
     debug: bool,
     enhanced_async: bool,
     force_delete: bool,
-    intra_folder: bool, // NEW: intra-folder duplicate search
+    intra_folder: bool,
+    // Fuzzy comparison options
+    fuzzy: bool,           // -Z: enable fuzzy mode
+    tolerance: u64,        // -t N: max differing bytes allowed
+    fuzzy_as_dupes: bool,  // -U: treat fuzzy matches as exact duplicates
+}
+
+/// How a duplicate group was matched.
+#[derive(Debug, Clone, PartialEq)]
+enum MatchKind {
+    Exact,
+    Fuzzy { bytes_differing: u64 },
 }
 
 #[derive(Debug)]
 struct DuplicateGroup {
     files_by_folder: Vec<Vec<PathBuf>>,
     size: u64,
+    match_kind: MatchKind,
 }
 
 fn main() -> io::Result<()> {
@@ -202,6 +214,28 @@ fn main() -> io::Result<()> {
                 .help("Find duplicates only within the first folder (single folder mode)")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("fuzzy")
+                .short('Z')
+                .long("fuzzy")
+                .help("Enable fuzzy comparison: files within --tolerance bytes are near-duplicates, moved to 'differ/' folder")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("tolerance")
+                .short('t')
+                .long("tolerance")
+                .help("Byte threshold for fuzzy comparison (required with -Z, always specify separately: -Z -t 50)")
+                .value_name("BYTES")
+                .value_parser(clap::value_parser!(u64)),
+        )
+        .arg(
+            Arg::new("fuzzy_as_dupes")
+                .short('U')
+                .long("fuzzy-as-dupes")
+                .help("Treat fuzzy matches as exact duplicates (requires -Z); eligible for -D/-F deletion")
+                .action(ArgAction::SetTrue),
+        )
         .get_matches();
 
     // Handle version flags
@@ -230,6 +264,24 @@ fn main() -> io::Result<()> {
         matches.get_one::<String>("folder2").map(|s| s.as_str()).unwrap_or("")
     };
 
+    // Validate fuzzy flags
+    let fuzzy = matches.get_flag("fuzzy");
+    let tolerance = matches.get_one::<u64>("tolerance").copied();
+    let fuzzy_as_dupes = matches.get_flag("fuzzy_as_dupes");
+
+    if fuzzy && tolerance.is_none() {
+        eprintln!("Error: -Z/--fuzzy requires -t/--tolerance to be specified.");
+        eprintln!("Example: duptool folder1 folder2 -Z -t 50");
+        std::process::exit(1);
+    }
+    if !fuzzy && tolerance.is_some() {
+        eprintln!("Warning: -t/--tolerance has no effect without -Z/--fuzzy.");
+    }
+    if fuzzy_as_dupes && !fuzzy {
+        eprintln!("Error: -U/--fuzzy-as-dupes requires -Z/--fuzzy.");
+        std::process::exit(1);
+    }
+
     // Define comparison options
     let mut options = CompareOptions {
         compare_content: matches.get_flag("content"),
@@ -240,12 +292,15 @@ fn main() -> io::Result<()> {
         everything_size: matches.get_flag("everything_size"),
         bidirectional: matches.get_flag("bidirectional"),
         async_compare: matches.get_flag("async"),
-        hdd_optimized: !matches.get_flag("hdd_deoptimized"), // Default to HDD optimization unless -M is specified
+        hdd_optimized: !matches.get_flag("hdd_deoptimized"),
         delete_duplicates: matches.get_flag("delete_duplicates"),
         debug: matches.get_flag("debug"),
         enhanced_async: matches.get_flag("enhanced_async"),
         force_delete: matches.get_flag("force_delete"),
-        intra_folder: matches.get_flag("intra") || single_mode, // Always intra-folder in single mode
+        intra_folder: matches.get_flag("intra") || single_mode,
+        fuzzy,
+        tolerance: tolerance.unwrap_or(0),
+        fuzzy_as_dupes,
     };
 
     if options.debug {
@@ -281,18 +336,60 @@ fn main() -> io::Result<()> {
         println!("Found {} files in {}", folder2_files.len(), folder2);
     }
 
-    let duplicates = find_duplicates(folder1_files, folder2_files, &options)?;
+    let duplicates = find_duplicates(folder1_files, folder2_files, folder1, folder2, &options)?;
 
-    if options.delete_duplicates || options.force_delete {
-        if !single_mode {
-            move_duplicates_to_deleted(&duplicates, folder1, folder2, &options)?;
+    // Separate exact and fuzzy match groups
+    let (exact_groups, fuzzy_groups): (Vec<_>, Vec<_>) = duplicates
+        .into_iter()
+        .partition(|g| g.match_kind == MatchKind::Exact);
+
+    // Handle fuzzy groups: move to 'differ/' unless -U (treat as dupes)
+    if !fuzzy_groups.is_empty() {
+        if options.fuzzy_as_dupes {
+            // Treat as exact duplicates — fall through to normal delete logic below
+            // by merging back; handled after this block
         } else {
-            // In single mode, just move to deleted in folder1
-            move_duplicates_to_deleted(&duplicates, folder1, "", &options)?;
+            // Default fuzzy behaviour: move to 'differ/' folder (report-only if no -D/-F)
+            if options.delete_duplicates || options.force_delete {
+                move_fuzzy_to_differ(&fuzzy_groups, folder1, folder2, &options)?;
+            }
         }
     }
 
-    display_results(&duplicates, folder1, if single_mode { "" } else { folder2 });
+    // Combine for deletion: exact always eligible, fuzzy only if -U
+    let mut groups_for_deletion: Vec<&DuplicateGroup> = exact_groups.iter().collect();
+    if options.fuzzy_as_dupes {
+        groups_for_deletion.extend(fuzzy_groups.iter());
+    }
+
+    if (options.delete_duplicates || options.force_delete) && !groups_for_deletion.is_empty() {
+        if !single_mode {
+            move_duplicates_to_deleted(
+                &groups_for_deletion.iter().map(|g| DuplicateGroup {
+                    files_by_folder: g.files_by_folder.clone(),
+                    size: g.size,
+                    match_kind: g.match_kind.clone(),
+                }).collect::<Vec<_>>(),
+                folder1, folder2, &options
+            )?;
+        } else {
+            move_duplicates_to_deleted(
+                &groups_for_deletion.iter().map(|g| DuplicateGroup {
+                    files_by_folder: g.files_by_folder.clone(),
+                    size: g.size,
+                    match_kind: g.match_kind.clone(),
+                }).collect::<Vec<_>>(),
+                folder1, "", &options
+            )?;
+        }
+    }
+
+    // Merge all groups for display
+    let all_groups: Vec<DuplicateGroup> = exact_groups.into_iter()
+        .chain(fuzzy_groups.into_iter())
+        .collect();
+
+    display_results(&all_groups, folder1, if single_mode { "" } else { folder2 });
     
     println!("Completed in {:.2} seconds", start_time.elapsed().as_secs_f32());
     
@@ -334,6 +431,8 @@ fn collect_files(root: &str, folder_index: usize, hdd_optimized: bool) -> io::Re
 fn find_duplicates(
     folder1_files: Vec<FileInfo>, 
     folder2_files: Vec<FileInfo>, 
+    folder1: &str,
+    folder2: &str,
     options: &CompareOptions
 ) -> io::Result<Vec<DuplicateGroup>> {
     println!("Comparing files...");
@@ -393,6 +492,29 @@ fn find_duplicates(
         name_filtered_groups = potential_duplicates;
     }
 
+    // -D pre-filter: with delete_duplicates (but not force_delete) we only care about
+    // files that have a counterpart at the *same relative path* in folder2.  Any size
+    // group that can never produce such a pair is useless to compare — drop it early.
+    let name_filtered_groups = if options.delete_duplicates && !options.force_delete && !folder2.is_empty() {
+        let folder2_sanitized = sanitize_path(folder2);
+        name_filtered_groups
+            .into_iter()
+            .filter(|group| {
+                group.iter().any(|f| {
+                    if f.folder_index != 0 { return false; }
+                    let sanitized = sanitize_path(&f.path);
+                    if let Ok(relative) = sanitized.strip_prefix(sanitize_path(folder1)) {
+                        sanitize_path(&folder2_sanitized.join(relative)).exists()
+                    } else {
+                        false
+                    }
+                })
+            })
+            .collect()
+    } else {
+        name_filtered_groups
+    };
+
     // --- CORRECT QUICK CHECK LOGIC ---
     // - If only -C: compare only first and last 8MB, never full hash.
     // - If -C and -A/-E: first filter by quick check, then do full hash for those that match.
@@ -449,16 +571,43 @@ fn find_duplicates(
 
         // Output results based on quick check only, no full hash
         let mut duplicates = Vec::new();
-        for group in quick_checked_groups {
+        for group in &quick_checked_groups {
             if !group.is_empty() {
                 let mut files_by_folder = vec![Vec::new(), Vec::new()];
                 let size = group[0].size;
                 for file in group {
-                    files_by_folder[file.folder_index].push(file.path);
+                    files_by_folder[file.folder_index].push(file.path.clone());
                 }
-                duplicates.push(DuplicateGroup { files_by_folder, size });
+                duplicates.push(DuplicateGroup { files_by_folder, size, match_kind: MatchKind::Exact });
             }
         }
+
+        // Fuzzy stage: -C quick-matched groups are exact; the original
+        // name_filtered_groups that *didn't* pass quick check are the fuzzy
+        // candidates. We reconstruct them from all size-groups minus exact hits.
+        if options.fuzzy {
+            let exact_paths: HashSet<PathBuf> = duplicates
+                .iter()
+                .flat_map(|g| g.files_by_folder.iter().flat_map(|v| v.iter().cloned()))
+                .collect();
+            let fuzzy_candidates: Vec<Vec<FileInfo>> = quick_checked_groups
+                .iter()
+                .map(|group| {
+                    group.iter()
+                        .filter(|f| !exact_paths.contains(&f.path))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .filter(|g| g.len() > 1 && has_files_from_both_folders(g))
+                .collect();
+            if !fuzzy_candidates.is_empty() {
+                println!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
+                let fuzzy_results = fuzzy_compare_groups(&fuzzy_candidates, options)?;
+                println!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
+                duplicates.extend(fuzzy_results);
+            }
+        }
+
         return Ok(duplicates);
     }
 
@@ -505,6 +654,10 @@ fn find_duplicates(
             .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
 
+        // Clone before moving into closure so the fuzzy stage can still use
+        // quick_checked_groups afterwards.
+        let groups_for_thread = quick_checked_groups.clone();
+
         // Run the comparison in a closure so we can join the progress bars after
         let result = if options.async_compare || options.enhanced_async {
             let mut full_hash_options = options.clone();
@@ -513,7 +666,7 @@ fn find_duplicates(
             let file_progress = file_progress.clone();
             std::thread::spawn(move || {
                 async_content_compare_with_file_progress(
-                    quick_checked_groups, full_hash_options, progress_bar, file_progress
+                    groups_for_thread, full_hash_options, progress_bar, file_progress
                 )
             })
         } else {
@@ -523,7 +676,7 @@ fn find_duplicates(
             let file_progress = file_progress.clone();
             std::thread::spawn(move || {
                 sync_content_compare_with_file_progress(
-                    quick_checked_groups, &full_hash_options, progress_bar, file_progress
+                    groups_for_thread, &full_hash_options, progress_bar, file_progress
                 )
             })
         };
@@ -550,37 +703,103 @@ fn find_duplicates(
 
         let mut final_duplicates = Vec::new();
 
-        for group in quick_checked_groups {
+        for group in &quick_checked_groups {
             group_bar.inc(1);
-            for _ in &group {
+            for _ in group {
                 file_bar.inc(1);
             }
             if !group.is_empty() {
                 let mut files_by_folder = vec![Vec::new(), Vec::new()];
                 let size = group[0].size;
                 for file in group {
-                    files_by_folder[file.folder_index].push(file.path);
+                    files_by_folder[file.folder_index].push(file.path.clone());
                 }
-                final_duplicates.push(DuplicateGroup { files_by_folder, size });
+                final_duplicates.push(DuplicateGroup { files_by_folder, size, match_kind: MatchKind::Exact });
             }
         }
         group_bar.finish();
         file_bar.finish();
         m.clear().unwrap();
+        // Fuzzy on remaining candidates before the early return
+        if options.fuzzy {
+            let exact_paths: HashSet<PathBuf> = final_duplicates
+                .iter()
+                .flat_map(|g| g.files_by_folder.iter().flat_map(|v| v.iter().cloned()))
+                .collect();
+            let fuzzy_candidates: Vec<Vec<FileInfo>> = quick_checked_groups
+                .iter()
+                .map(|group| {
+                    group.iter()
+                        .filter(|f| !exact_paths.contains(&f.path))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .filter(|g| g.len() > 1 && has_files_from_both_folders(g))
+                .collect();
+            if !fuzzy_candidates.is_empty() {
+                println!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
+                let fuzzy_results = fuzzy_compare_groups(&fuzzy_candidates, options)?;
+                println!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
+                final_duplicates.extend(fuzzy_results);
+            }
+        }
         return Ok(final_duplicates);
     } else {
         // If no content comparison, just convert to duplicate groups
-        for group in quick_checked_groups {
+        for group in &quick_checked_groups {
             if !group.is_empty() {
                 let mut files_by_folder = vec![Vec::new(), Vec::new()];
                 let size = group[0].size;
                 for file in group {
-                    files_by_folder[file.folder_index].push(file.path);
+                    files_by_folder[file.folder_index].push(file.path.clone());
                 }
-                duplicates.push(DuplicateGroup { files_by_folder, size });
+                duplicates.push(DuplicateGroup { files_by_folder, size, match_kind: MatchKind::Exact });
             }
         }
     }
+
+    // --- FUZZY STAGE ---
+    // If -Z is active, take the size-groups that survived name/quick filtering
+    // but produced NO exact duplicate matches, and run chunked fuzzy comparison.
+    // When -C is also active, groups that quick-check said "differ" are the
+    // exact candidates for fuzzy — they've already been filtered to same-size
+    // cross-folder pairs, so we just re-use quick_checked_groups that weren't
+    // promoted to exact duplicates.
+    if options.fuzzy {
+        // Collect the paths that are already covered by exact matches so we
+        // don't double-report them.
+        let exact_paths: HashSet<PathBuf> = duplicates
+            .iter()
+            .flat_map(|g| g.files_by_folder.iter().flat_map(|v| v.iter().cloned()))
+            .collect();
+
+        // Build candidate groups: same-size, cross-folder, not already exact.
+        let fuzzy_candidates: Vec<Vec<FileInfo>> = quick_checked_groups
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .filter(|f| !exact_paths.contains(&f.path))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .filter(|g| g.len() > 1 && has_files_from_both_folders(g))
+            .collect();
+
+        if !fuzzy_candidates.is_empty() {
+            println!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
+            let fuzzy_results = fuzzy_compare_groups(&fuzzy_candidates, options)?;
+            println!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
+            duplicates.extend(fuzzy_results);
+        }
+    }
+
+    // Sort results by the path of the first file in each group for deterministic output.
+    duplicates.sort_by(|a, b| {
+        let path_a = a.files_by_folder.values().flatten().next().map(|f| &f.path);
+        let path_b = b.files_by_folder.values().flatten().next().map(|f| &f.path);
+        path_a.cmp(&path_b)
+    });
 
     Ok(duplicates)
 }
@@ -678,7 +897,8 @@ fn sync_content_compare(
 
                 duplicates.push(DuplicateGroup { 
                     files_by_folder, 
-                    size: group_size 
+                    size: group_size,
+                    match_kind: MatchKind::Exact,
                 });
             }
         }
@@ -750,7 +970,8 @@ fn sync_content_compare_with_file_progress(
 
                 duplicates.push(DuplicateGroup { 
                     files_by_folder, 
-                    size: group_size 
+                    size: group_size,
+                    match_kind: MatchKind::Exact,
                 });
             }
         }
@@ -855,7 +1076,8 @@ fn async_content_compare_with_file_progress(
 
                         local_duplicates.push(DuplicateGroup { 
                             files_by_folder, 
-                            size: file_size 
+                            size: file_size,
+                            match_kind: MatchKind::Exact,
                         });
                     }
                 }
@@ -923,7 +1145,7 @@ fn process_files_independent(
                     files_by_folder[folder_index].push(f.path.clone());
                 }
                 let mut all_duplicates = duplicates.lock().unwrap();
-                all_duplicates.push(DuplicateGroup { files_by_folder, size: group[0].size });
+                all_duplicates.push(DuplicateGroup { files_by_folder, size: group[0].size, match_kind: MatchKind::Exact });
             }
         }
         progress.inc(1);
@@ -973,6 +1195,115 @@ fn calculate_file_hash(file: &FileInfo, quick_check: bool) -> io::Result<Option<
         let result = hasher.compute();
         Ok(Some(format!("{:x}", result)))
     }
+}
+
+/// Compare two same-size files chunk by chunk, counting differing bytes.
+/// Never loads the full file into RAM — uses a 1MB rolling buffer matching
+/// the existing I/O strategy. Always reads both files completely so the
+/// caller gets the exact differing byte count even when it exceeds threshold.
+/// Returns None if either file cannot be opened/read.
+fn chunked_fuzzy_compare(path_a: &Path, path_b: &Path, debug: bool) -> io::Result<u64> {
+    const CHUNK: usize = 1024 * 1024; // 1 MB, matches existing buffer size
+
+    let mut fa = File::open(path_a)?;
+    let mut fb = File::open(path_b)?;
+
+    let mut buf_a = vec![0u8; CHUNK];
+    let mut buf_b = vec![0u8; CHUNK];
+    let mut total_diff: u64 = 0;
+
+    loop {
+        let na = fa.read(&mut buf_a)?;
+        let nb = fb.read(&mut buf_b)?;
+
+        // Both files are same size (precondition from size grouping), so na == nb
+        // at every chunk. If they somehow diverge, stop — something is wrong.
+        if na == 0 && nb == 0 {
+            break;
+        }
+        if na != nb {
+            if debug {
+                eprintln!(
+                    "[FUZZY] Chunk size mismatch ({} vs {}) for {} <-> {} — aborting",
+                    na, nb, path_a.display(), path_b.display()
+                );
+            }
+            // Treat divergent read as maximum difference so the pair is rejected.
+            return Ok(u64::MAX);
+        }
+
+        let chunk_diff = buf_a[..na]
+            .iter()
+            .zip(buf_b[..nb].iter())
+            .filter(|(a, b)| a != b)
+            .count() as u64;
+        total_diff += chunk_diff;
+    }
+
+    Ok(total_diff)
+}
+
+/// Run fuzzy comparison across all size-groups that already failed exact
+/// hashing (or were never hashed when -Z is used standalone).
+/// Groups files from both folders by size, then for every cross-folder pair
+/// within each size bucket runs chunked_fuzzy_compare.
+/// Returns (fuzzy_matches, exceeded_pairs_for_debug).
+fn fuzzy_compare_groups(
+    groups: &[Vec<FileInfo>],
+    options: &CompareOptions,
+) -> io::Result<Vec<DuplicateGroup>> {
+    let mut results = Vec::new();
+
+    for group in groups {
+        // Collect files from each folder separately
+        let folder0: Vec<&FileInfo> = group.iter().filter(|f| f.folder_index == 0).collect();
+        let folder1: Vec<&FileInfo> = group.iter().filter(|f| f.folder_index == 1).collect();
+
+        // Cross-product: every f0 against every f1 of the same size
+        for f0 in &folder0 {
+            for f1 in &folder1 {
+                let diff = match chunked_fuzzy_compare(&f0.path, &f1.path, options.debug) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        if options.debug {
+                            eprintln!(
+                                "[FUZZY] Error comparing {} <-> {}: {}",
+                                f0.path.display(), f1.path.display(), e
+                            );
+                        }
+                        continue;
+                    }
+                };
+
+                if diff <= options.tolerance {
+                    if options.debug {
+                        println!(
+                            "[FUZZY MATCH] {} bytes differ (≤{} threshold)\n  {} <-> {}",
+                            diff, options.tolerance,
+                            f0.path.display(), f1.path.display()
+                        );
+                    }
+                    let files_by_folder = vec![
+                        vec![f0.path.clone()],
+                        vec![f1.path.clone()],
+                    ];
+                    results.push(DuplicateGroup {
+                        files_by_folder,
+                        size: f0.size,
+                        match_kind: MatchKind::Fuzzy { bytes_differing: diff },
+                    });
+                } else if options.debug {
+                    println!(
+                        "[FUZZY EXCEED] {} bytes differ (>{} threshold) — skipped\n  {} <-> {}",
+                        diff, options.tolerance,
+                        f0.path.display(), f1.path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 fn split_into_chunks<T: Clone>(items: Vec<T>, chunk_count: usize, hdd_optimized: bool) -> Vec<Vec<T>> {
@@ -1026,7 +1357,8 @@ fn process_groups(
 
                 local_duplicates.push(DuplicateGroup { 
                     files_by_folder, 
-                    size: file_size 
+                    size: file_size,
+                    match_kind: MatchKind::Exact,
                 });
             }
         }
@@ -1034,6 +1366,109 @@ fn process_groups(
         if !local_duplicates.is_empty() {
             let mut all_duplicates = duplicates.lock().unwrap();
             all_duplicates.extend(local_duplicates);
+        }
+    }
+
+    Ok(())
+}
+
+/// Move fuzzy-matched files from folder1 into a `differ/` subfolder,
+/// preserving relative paths. Respects the same -D/-F semantics as
+/// move_duplicates_to_deleted:
+///   -D (delete_duplicates, !force_delete): only move if the counterpart
+///      exists at the *same relative path* inside folder2.
+///   -F (force_delete): move regardless of folder2 structure.
+fn move_fuzzy_to_differ(
+    fuzzy_groups: &[DuplicateGroup],
+    folder1: &str,
+    folder2: &str,
+    options: &CompareOptions,
+) -> io::Result<()> {
+    let differ_folder = sanitize_path(&Path::new(folder1).join("differ"));
+    if !differ_folder.exists() {
+        if options.debug {
+            println!("Creating 'differ' folder at: {}", differ_folder.display());
+        }
+        create_dir_all(&differ_folder)?;
+    }
+
+    for group in fuzzy_groups {
+        let bytes_diff = match &group.match_kind {
+            MatchKind::Fuzzy { bytes_differing } => *bytes_differing,
+            _ => 0,
+        };
+
+        for file_path in &group.files_by_folder[0] {
+            let sanitized = sanitize_path(file_path);
+            let relative = match sanitized.strip_prefix(sanitize_path(folder1)) {
+                Ok(p) => p,
+                Err(e) => {
+                    if options.debug {
+                        eprintln!("Error stripping prefix for {}: {}", sanitized.display(), e);
+                    }
+                    continue;
+                }
+            };
+
+            // -D: only move if the counterpart exists at the same relative
+            // path in folder2. -F or single-mode: skip this check.
+            if !options.force_delete && !folder2.is_empty() {
+                let corresponding = sanitize_path(&Path::new(folder2).join(relative));
+                if !corresponding.exists() {
+                    if options.debug {
+                        println!(
+                            "[FUZZY] Skipping {} — no match at same path in folder2: {} (use -F to force)",
+                            sanitized.display(), corresponding.display()
+                        );
+                    }
+                    continue;
+                }
+            }
+
+            let target = sanitize_path(&differ_folder.join(relative));
+
+            if options.debug {
+                println!(
+                    "[FUZZY] Moving ({} bytes differ): {} -> {}",
+                    bytes_diff, sanitized.display(), target.display()
+                );
+            }
+
+            if let Some(parent) = target.parent() {
+                if let Err(e) = create_dir_all(parent) {
+                    eprintln!("Failed to create directory {}: {}", parent.display(), e);
+                    continue;
+                }
+            }
+
+            if !sanitized.exists() {
+                if options.debug {
+                    eprintln!("Source file does not exist: {}", sanitized.display());
+                }
+                continue;
+            }
+
+            match rename(&sanitized, &target) {
+                Ok(_) => {
+                    println!(
+                        "Moved to differ/ ({} bytes differ): {}",
+                        bytes_diff, sanitized.display()
+                    );
+                }
+                Err(_) => {
+                    if let Err(e) = copy_and_remove(&sanitized, &target, options) {
+                        eprintln!(
+                            "Failed to move {} to differ/: {}",
+                            sanitized.display(), e
+                        );
+                    } else {
+                        println!(
+                            "Moved to differ/ ({} bytes differ): {}",
+                            bytes_diff, sanitized.display()
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1288,10 +1723,14 @@ fn display_results(duplicates: &[DuplicateGroup], folder1: &str, folder2: &str) 
         println!("No duplicates found.");
         return;
     }
-    
-    println!("\nFound {} duplicate groups:", duplicates.len());
-    println!("{:40} : {:40} | {}", folder1, folder2, "size");
-    println!("{}", "-".repeat(90));
+
+    let exact_count = duplicates.iter().filter(|g| g.match_kind == MatchKind::Exact).count();
+    let fuzzy_count = duplicates.len() - exact_count;
+
+    println!("\nFound {} duplicate group(s) ({} exact, {} fuzzy near-duplicate):",
+        duplicates.len(), exact_count, fuzzy_count);
+    println!("{:40} : {:40} | {:10} | {}", folder1, folder2, "size", "match");
+    println!("{}", "-".repeat(100));
     
     let mut total_folder1_files = 0;
     let mut total_folder2_files = 0;
@@ -1301,13 +1740,16 @@ fn display_results(duplicates: &[DuplicateGroup], folder1: &str, folder2: &str) 
         let folder1_files = &duplicate.files_by_folder[0];
         let folder2_files = &duplicate.files_by_folder[1];
         let size_str = format_size(duplicate.size);
+
+        let match_label = match &duplicate.match_kind {
+            MatchKind::Exact => "EXACT".to_string(),
+            MatchKind::Fuzzy { bytes_differing } => format!("FUZZY ~{}B", bytes_differing),
+        };
         
         total_folder1_files += folder1_files.len();
         total_folder2_files += folder2_files.len();
-        // Sum the size of all files in folder1 for this group
         total_duplicate_size_folder1 += folder1_files.len() as u64 * duplicate.size;
         
-        // Prepare the left side (folder1)
         let folder1_text = if folder1_files.is_empty() {
             String::new()
         } else {
@@ -1318,7 +1760,6 @@ fn display_results(duplicates: &[DuplicateGroup], folder1: &str, folder2: &str) 
                 .join("; ")
         };
         
-        // Prepare the right side (folder2)
         let folder2_text = if folder2_files.is_empty() {
             String::new()
         } else {
@@ -1329,9 +1770,8 @@ fn display_results(duplicates: &[DuplicateGroup], folder1: &str, folder2: &str) 
                 .join("; ")
         };
         
-        println!("{:40} : {:40} | {}", folder1_text, folder2_text, size_str);
+        println!("{:40} : {:40} | {:10} | {}", folder1_text, folder2_text, size_str, match_label);
         
-        // Check if there are subdirectories
         let mut has_subdirs = false;
         for path in folder1_files.iter().chain(folder2_files.iter()) {
             if path.parent().unwrap_or(Path::new("")) != Path::new(folder1) &&
@@ -1341,13 +1781,12 @@ fn display_results(duplicates: &[DuplicateGroup], folder1: &str, folder2: &str) 
             }
         }
         
-        // If there are subdirectories, show a detailed view
         if has_subdirs {
             display_subdirectory_details(folder1_files, folder2_files, folder1, folder2);
         }
     }
     
-    println!("{}", "-".repeat(90));
+    println!("{}", "-".repeat(100));
     println!("Total ratio: {}:{}", total_folder1_files, total_folder2_files);
     println!("Total duplicates size (from 1st folder): {}", format_size(total_duplicate_size_folder1));
 }

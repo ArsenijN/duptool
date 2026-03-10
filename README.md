@@ -14,12 +14,17 @@
 - ⚡ **Quick Check Mode** (`-C`): Compare first and last 8MB before full hashing to speed up detection.
 - 🚀 **Async Processing** (`-A`/`-E`): Compare files in parallel using multithreading.
 - 🗃️ **Name/Size Comparison** (`-n`, `-s`): Optional modes for fast, coarse comparison.
+- 📁 **Single Folder Mode** (`-1`): Find duplicates within a single folder — no second folder required.
+- 🔁 **Intra-folder Search** (`-b`): Also find duplicates within each folder alongside inter-folder comparison.
+- 🌫️ **Fuzzy Comparison** (`-Z -t N`): Detect near-duplicates that differ only in embedded metadata (EXIF, GPS, modify date). Files within N differing bytes are moved to a `differ/` folder for review. Use `-U` to treat fuzzy matches as exact duplicates instead.
 - 📂 **Smart Deletion**:
   - `-D`: Move duplicates to `deleted` subfolder if path matches.
   - `-F`: Force-delete duplicates from `folder1`, regardless of relative path.
+  - `-Z` (fuzzy, default): Move near-duplicates to `differ/` subfolder for review.
+  - `-Z -U` (fuzzy-as-dupes): Near-duplicates treated as exact, eligible for `-D`/`-F`.
 - 🔍 **Everything Integration**: Use Everything for rapid name/size checks (`-N`, `-S`).
-- 🧠 **Progress Estimation**: Real-time ETA updates and per-file speed feedback.
-- 🧰 **Debug Mode** (`-X`): Outputs detailed logs for diagnostics.
+- 🧠 **Progress Estimation**: Real-time ETA updates and per-file speed feedback via dual progress bars.
+- 🧰 **Debug Mode** (`-X`): Outputs detailed logs for diagnostics, including fuzzy byte-diff info.
 - 🧹 **Path Handling**: Handles long paths and Unicode edge cases on Windows.
 - 🛠️ **HDD Optimization**: Control caching behavior (`-m`, `-M`) for HDD/SSD.
 
@@ -40,7 +45,7 @@ Traditional comparison tools often:
 
 ---
 
-## 🔧 Usage Example
+## 🔧 Usage Examples
 
 ```sh
 duptool folder1 folder2 -ABCEFX
@@ -54,6 +59,26 @@ This compares files **between** `folder1` and `folder2`, using:
 * `E`: Enhanced async mode
 * `F`: Force delete duplicates from folder1
 * `X`: Debug logging
+
+**Fuzzy / near-duplicate detection** (note: `-t` always specified separately since it takes a value):
+
+```sh
+duptool folder1 folder2 -Z -t 50
+```
+
+Finds files that differ by 50 bytes or fewer — moves them to `folder1/differ/` for review.
+
+```sh
+duptool folder1 folder2 -ABCZ -t 50
+```
+
+Full pipeline with async, bidirectional, quick check, and fuzzy fallback for quick-check misses.
+
+```sh
+duptool folder1 folder2 -Z -t 50 -U -F
+```
+
+Treat fuzzy matches as exact duplicates and force-move them to `deleted/`.
 
 For a full list of flags, run:
 
