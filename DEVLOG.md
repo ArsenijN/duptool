@@ -5,6 +5,11 @@ I keep all changes here, so versions can be easily compared between themself
 
 ---
 
+## Changes: V0.1.12.1 (urgent patch):
+- **FIX the code errors due to new sort feature, silently processed to the commit because of skipped `cargo clean` before build attempt**
+
+---
+
 ## Changes: V0.1.12 (planned)
 - **NEW: Fuzzy comparison mode (`-Z` / `--fuzzy`):** Detects near-duplicate files that differ only in embedded metadata (e.g. JPEG EXIF rotation tag, EXIF `ModifyDate`, GPS metadata stripped by Google Photos from video files). Uses a chunked byte-by-byte comparison that never loads full files into RAM — reads both files simultaneously in 1MB chunks, counting differing bytes across the whole file.
 - **NEW: Byte tolerance threshold (`-t N` / `--tolerance N`):** Specifies how many bytes may differ for a pair to be considered a near-duplicate. Required when `-Z` is used. Always specified separately from combined flags (e.g. `-ABDEZ -t 50`), since `-t` takes a value. Percentage-based threshold planned as `-T` for a future version.

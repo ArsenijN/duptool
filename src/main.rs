@@ -796,8 +796,8 @@ fn find_duplicates(
 
     // Sort results by the path of the first file in each group for deterministic output.
     duplicates.sort_by(|a, b| {
-        let path_a = a.files_by_folder.values().flatten().next().map(|f| &f.path);
-        let path_b = b.files_by_folder.values().flatten().next().map(|f| &f.path);
+        let path_a = a.files_by_folder.iter().flatten().next();
+        let path_b = b.files_by_folder.iter().flatten().next();
         path_a.cmp(&path_b)
     });
 
