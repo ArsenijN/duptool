@@ -5,6 +5,21 @@ I keep all changes here, so versions can be easily compared between themself
 
 ---
 
+## Changes: V0.1.13
+- **NEW: Stem comparison mode (`-k` / `--stem`):** Groups files by their filename stem — the portion before the last `.`. For example `photo.jpg` and `photo.png` both have stem `photo` and will be treated as candidates. Useful for finding renamed copies of the same file where only the format changed. Comparison is case-sensitive, consistent with the existing `-n` mode. Stacks on top of size grouping (same stem + same size), and can be freely combined with `-e`, `-n`, and `-c`.
+- **NEW: Extension comparison mode (`-e` / `--ext`):** Groups files that share the same extension. Comparison is **case-insensitive** so `.JPG` and `.jpg` match. Files with no extension are grouped together under an empty key. Like `-k`, stacks on top of size grouping (same extension + same size). Combining `-k` and `-e` together behaves like `-n` — both the stem and the extension must match, which is equivalent to requiring the full filename.
+- **FIX: Default-mode guard now recognises `-k` and `-e`:** Previously the guard that enables content comparison when no explicit mode is selected only checked `compare_content`, `compare_name`, and `compare_size`. Passing only `-k` or `-e` would silently enable content comparison on top of the requested filter. The condition now includes all five comparison flags.
+- **FIX: `-C -Z` fuzzy candidates were always empty:** The fuzzy stage incorrectly derived its candidate pool from `quick_checked_groups` — the set of files that *passed* quick-check. Because every file in that set had already been promoted to an exact match, the `exact_paths` subtraction left nothing for fuzzy comparison. The real fuzzy candidates are files that *failed* quick-check (or failed the full hash), which are not in `quick_checked_groups` at all. Fix: a `saved_name_filtered` clone is taken before any branch consumes `name_filtered_groups`, and all three fuzzy candidate computation sites now subtract `exact_paths` from `saved_name_filtered` instead. This affects the `-C`-only early-return path, the `-C -A/-E` early-return path, and the main (full-hash) path.
+- **FIX: `DuplicateGroup.size` was the total group size instead of a single file's size:** `sync_content_compare_with_file_progress` (the active sync path) and the dead-code `sync_content_compare` both computed `group_size` as `group.iter().map(|f| f.size).sum()`. Because groups are formed by size equality, all files in a group share the same size, so for a group of N files the sum is `N × file_size` instead of `file_size`. Since `display_results` then multiplies `duplicate.size × folder1_files.len()`, the reported "total duplicates" stat was inflated by a factor of N. Both functions now use `group.first().map_or(0, |f| f.size)`. The async path (`async_content_compare_with_file_progress`) already used `group[0].size` correctly and was unaffected.
+- **FIX: Async mode with single-folder (`-1 -A` or `-1 -E`) found zero duplicates:** `async_content_compare_with_file_progress` contained an unconditional `!has_files_from_both_folders(&group)` guard. In intra-folder or single-folder mode every file carries `folder_index == 0`, so `has_files_from_both_folders` always returns `false` and every group was silently skipped. The guard is now `!options.intra_folder && !has_files_from_both_folders(&group)`.
+- **Tests: Comprehensive `#[cfg(test)]` module added to `src/main.rs` (51 tests total):** Run with `cargo test`. Covers:
+  - *Unit tests* for `group_by_name`, `group_by_stem`, `group_by_ext` (including case-insensitivity and compound extensions), `format_size`, `has_files_from_both_folders`, `sanitize_path`, `calculate_file_hash` (same content → same hash, different content → different hash, quick == full for small files), and `chunked_fuzzy_compare` (zero diff, one byte, many bytes, all bytes).
+  - *Integration tests* for `find_duplicates` covering: exact content match, size mismatch early-exit, multiple groups, name mode (match and no-match), stem mode (match, no-match, combined with `-c`), extension mode (match, no-match, case-insensitivity, combined `-k -e`), intra-folder mode (match and no-match), fuzzy mode within/exceeding tolerance and the exact-vs-fuzzy classification.
+  - *Regression tests* pinning all three bugs fixed in this version: the `group_size` sum bug, the `-C -Z` empty-candidate bug, and the async intra-folder skip bug. Each regression test is documented with a comment explaining the root cause and the fix.
+- **Version bump to 0.1.13.**
+
+---
+
 ## Changes: V0.1.12.1 (urgent patch):
 - **FIX the code errors due to new sort feature, silently processed to the commit because of skipped `cargo clean` before build attempt**
 
@@ -122,4 +137,4 @@ I keep all changes here, so versions can be easily compared between themself
 - [x] ~~Add option to show progress per file, not just per group.~~ — **Implemented in v0.1.8** (dual progress bars via `MultiProgress`)
 - [ ] Add more flexible duplicate handling (e.g., interactive mode).
 - [ ] Improve Unicode/path handling for edge cases.
-- [ ] Add tests and CI.
+- [x] ~~Add tests and CI.~~ — **Implemented in v0.1.13** (51-test `#[cfg(test)]` module; `cargo test`)

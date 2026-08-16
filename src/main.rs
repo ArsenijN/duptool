@@ -41,6 +41,9 @@ struct CompareOptions {
     fuzzy: bool,           // -Z: enable fuzzy mode
     tolerance: u64,        // -t N: max differing bytes allowed
     fuzzy_as_dupes: bool,  // -U: treat fuzzy matches as exact duplicates
+    // Partial name comparison options
+    compare_stem: bool,    // -k: compare by file stem (filename without extension)
+    compare_ext: bool,     // -e: compare by file extension only
 }
 
 /// How a duplicate group was matched.
@@ -236,6 +239,20 @@ fn main() -> io::Result<()> {
                 .help("Treat fuzzy matches as exact duplicates (requires -Z); eligible for -D/-F deletion")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("stem")
+                .short('k')
+                .long("stem")
+                .help("Compare by file stem (filename without extension, e.g. 'photo' from 'photo.jpg')")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("ext")
+                .short('e')
+                .long("ext")
+                .help("Compare by file extension only (e.g. '.jpg'); combined with size grouping")
+                .action(ArgAction::SetTrue),
+        )
         .get_matches();
 
     // Handle version flags
@@ -301,6 +318,8 @@ fn main() -> io::Result<()> {
         fuzzy,
         tolerance: tolerance.unwrap_or(0),
         fuzzy_as_dupes,
+        compare_stem: matches.get_flag("stem"),
+        compare_ext: matches.get_flag("ext"),
     };
 
     if options.debug {
@@ -313,7 +332,9 @@ fn main() -> io::Result<()> {
     }
 
     // Default behavior: if none of the main comparison options are selected, use content comparison
-    if !options.compare_content && !options.compare_name && !options.compare_size {
+    if !options.compare_content && !options.compare_name && !options.compare_size
+        && !options.compare_stem && !options.compare_ext
+    {
         options.compare_content = true;
         options.compare_size = true;  // content comparison implies size comparison
     }
@@ -492,6 +513,40 @@ fn find_duplicates(
         name_filtered_groups = potential_duplicates;
     }
 
+    // Apply stem filter (-k): further narrow groups by filename-without-extension.
+    // e.g. "photo.jpg" and "photo.png" share stem "photo".
+    let name_filtered_groups = if options.compare_stem {
+        let mut stem_filtered = Vec::new();
+        for group in name_filtered_groups {
+            for sg in group_by_stem(&group) {
+                if sg.len() > 1 && (!options.bidirectional || has_files_from_both_folders(&sg)) {
+                    stem_filtered.push(sg);
+                }
+            }
+        }
+        println!("Found {} potential duplicate groups by stem", stem_filtered.len());
+        stem_filtered
+    } else {
+        name_filtered_groups
+    };
+
+    // Apply extension filter (-e): further narrow groups by file extension.
+    // Comparison is case-insensitive (.JPG == .jpg). Files with no extension share "".
+    let name_filtered_groups = if options.compare_ext {
+        let mut ext_filtered = Vec::new();
+        for group in name_filtered_groups {
+            for eg in group_by_ext(&group) {
+                if eg.len() > 1 && (!options.bidirectional || has_files_from_both_folders(&eg)) {
+                    ext_filtered.push(eg);
+                }
+            }
+        }
+        println!("Found {} potential duplicate groups by extension", ext_filtered.len());
+        ext_filtered
+    } else {
+        name_filtered_groups
+    };
+
     // -D pre-filter: with delete_duplicates (but not force_delete) we only care about
     // files that have a counterpart at the *same relative path* in folder2.  Any size
     // group that can never produce such a pair is useless to compare — drop it early.
@@ -520,6 +575,13 @@ fn find_duplicates(
     // - If -C and -A/-E: first filter by quick check, then do full hash for those that match.
     // - If -A/-E without -C: always do full hash.
     // - If neither: always do full hash (sync).
+    //
+    // BUG FIX: save name_filtered_groups here so the fuzzy stage can correctly
+    // derive candidates as "all files not already in exact matches".  Without this,
+    // the fuzzy stage was rebuilding candidates from quick_checked_groups (files that
+    // *passed* quick check), which is wrong when -C is active — the true fuzzy
+    // candidates are the files that *failed* quick check (or failed full hash).
+    let saved_name_filtered = name_filtered_groups.clone();
 
     let mut quick_checked_groups = name_filtered_groups.clone();
 
@@ -582,15 +644,17 @@ fn find_duplicates(
             }
         }
 
-        // Fuzzy stage: -C quick-matched groups are exact; the original
-        // name_filtered_groups that *didn't* pass quick check are the fuzzy
-        // candidates. We reconstruct them from all size-groups minus exact hits.
+        // Fuzzy stage: files that passed quick-check became exact matches above.
+        // The true fuzzy candidates are those that *failed* quick-check, i.e. files
+        // present in saved_name_filtered but absent from the exact duplicates set.
         if options.fuzzy {
             let exact_paths: HashSet<PathBuf> = duplicates
                 .iter()
                 .flat_map(|g| g.files_by_folder.iter().flat_map(|v| v.iter().cloned()))
                 .collect();
-            let fuzzy_candidates: Vec<Vec<FileInfo>> = quick_checked_groups
+            // Use saved_name_filtered (all pre-quick-check candidates) and subtract
+            // the files that already became exact matches.
+            let fuzzy_candidates: Vec<Vec<FileInfo>> = saved_name_filtered
                 .iter()
                 .map(|group| {
                     group.iter()
@@ -720,13 +784,16 @@ fn find_duplicates(
         group_bar.finish();
         file_bar.finish();
         m.clear().unwrap();
-        // Fuzzy on remaining candidates before the early return
+        // Fuzzy on remaining candidates before the early return.
+        // Use saved_name_filtered so files that failed quick-check are included
+        // as fuzzy candidates (not just files that passed quick-check but differ
+        // on full hash, which is the incorrect set that quick_checked_groups gives).
         if options.fuzzy {
             let exact_paths: HashSet<PathBuf> = final_duplicates
                 .iter()
                 .flat_map(|g| g.files_by_folder.iter().flat_map(|v| v.iter().cloned()))
                 .collect();
-            let fuzzy_candidates: Vec<Vec<FileInfo>> = quick_checked_groups
+            let fuzzy_candidates: Vec<Vec<FileInfo>> = saved_name_filtered
                 .iter()
                 .map(|group| {
                     group.iter()
@@ -759,12 +826,10 @@ fn find_duplicates(
     }
 
     // --- FUZZY STAGE ---
-    // If -Z is active, take the size-groups that survived name/quick filtering
-    // but produced NO exact duplicate matches, and run chunked fuzzy comparison.
-    // When -C is also active, groups that quick-check said "differ" are the
-    // exact candidates for fuzzy — they've already been filtered to same-size
-    // cross-folder pairs, so we just re-use quick_checked_groups that weren't
-    // promoted to exact duplicates.
+    // If -Z is active, compare files that were NOT promoted to exact duplicates.
+    // We derive candidates from saved_name_filtered (the full pre-quick-check pool)
+    // rather than quick_checked_groups, so that files which *failed* quick-check
+    // (the correct fuzzy candidates when -C is combined with -Z) are included.
     if options.fuzzy {
         // Collect the paths that are already covered by exact matches so we
         // don't double-report them.
@@ -773,8 +838,10 @@ fn find_duplicates(
             .flat_map(|g| g.files_by_folder.iter().flat_map(|v| v.iter().cloned()))
             .collect();
 
-        // Build candidate groups: same-size, cross-folder, not already exact.
-        let fuzzy_candidates: Vec<Vec<FileInfo>> = quick_checked_groups
+        // Build candidate groups from saved_name_filtered: same-size, cross-folder,
+        // not already exact.  Using saved_name_filtered (instead of quick_checked_groups)
+        // is the critical fix — it includes groups that failed the quick-check gate.
+        let fuzzy_candidates: Vec<Vec<FileInfo>> = saved_name_filtered
             .iter()
             .map(|group| {
                 group
@@ -837,6 +904,36 @@ fn group_by_name(files: &[FileInfo]) -> Vec<Vec<FileInfo>> {
     name_groups.into_values().collect()
 }
 
+/// Group files by their stem (filename without any extension).
+/// e.g. "photo.jpg" and "photo.png" share stem "photo".
+/// Comparison is case-sensitive (consistent with group_by_name).
+fn group_by_stem(files: &[FileInfo]) -> Vec<Vec<FileInfo>> {
+    let mut stem_groups: HashMap<String, Vec<FileInfo>> = HashMap::new();
+    for file in files {
+        let stem = file.path.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        stem_groups.entry(stem).or_default().push(file.clone());
+    }
+    stem_groups.into_values().collect()
+}
+
+/// Group files by their extension (the part after the last '.').
+/// Files without an extension are grouped under the empty string.
+/// Comparison is case-insensitive so ".JPG" and ".jpg" match.
+fn group_by_ext(files: &[FileInfo]) -> Vec<Vec<FileInfo>> {
+    let mut ext_groups: HashMap<String, Vec<FileInfo>> = HashMap::new();
+    for file in files {
+        let ext = file.path.extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        ext_groups.entry(ext).or_default().push(file.clone());
+    }
+    ext_groups.into_values().collect()
+}
+
 #[allow(dead_code)]
 fn sync_content_compare(
     groups: Vec<Vec<FileInfo>>,
@@ -858,7 +955,8 @@ fn sync_content_compare(
             continue;
         }
 
-        let group_size: u64 = group.iter().map(|file| file.size).sum();
+        // All files in a group share the same size (grouped by size in find_duplicates).
+        let group_size: u64 = group.first().map_or(0, |f| f.size);
         let mut content_groups: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
         for file in group {
@@ -930,7 +1028,9 @@ fn sync_content_compare_with_file_progress(
             continue;
         }
 
-        let group_size: u64 = group.iter().map(|file| file.size).sum();
+        // All files in a group share the same size (grouped by size in find_duplicates).
+        // Using the sum would inflate DuplicateGroup.size and corrupt the display totals.
+        let group_size: u64 = group.first().map_or(0, |f| f.size);
         let mut content_groups: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
         for file in group {
@@ -1020,7 +1120,10 @@ fn async_content_compare_with_file_progress(
             for group in chunk {
                 progress.inc(1);
 
-                if group.len() <= 1 || !has_files_from_both_folders(&group) {
+                // In intra-folder mode (-1 / -b), all files carry folder_index == 0,
+                // so has_files_from_both_folders always returns false.  Only enforce
+                // the cross-folder requirement when we are NOT in intra-folder mode.
+                if group.len() <= 1 || (!options.intra_folder && !has_files_from_both_folders(&group)) {
                     continue;
                 }
 
@@ -1852,5 +1955,761 @@ fn display_subdirectory_details(
                 if in_folder2 { name.to_string_lossy() } else { "".into() }
             );
         }
+    }
+}
+// ══════════════════════════════════════════════════════════════════════════════
+// Tests
+// Run with: cargo test
+// Run with output:  cargo test -- --nocapture
+// Run one test:     cargo test test_name
+// ══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io::Write;
+
+    // ─── RAII temp-dir guard ──────────────────────────────────────────────────
+    // Automatically deletes the directory on drop, even when a test panics.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("duptool_test_{}", tag));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir)
+                .unwrap_or_else(|e| panic!("create temp dir {:?}: {}", dir, e));
+            TempDir(dir)
+        }
+        fn path(&self) -> &Path { &self.0 }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    // ─── helpers ──────────────────────────────────────────────────────────────
+
+    fn write_file(path: &Path, content: &[u8]) {
+        let mut f = File::create(path)
+            .unwrap_or_else(|e| panic!("create {:?}: {}", path, e));
+        f.write_all(content).unwrap();
+    }
+
+    fn make_file_info(path: &str, size: u64, folder_index: usize) -> FileInfo {
+        FileInfo { path: PathBuf::from(path), size, folder_index }
+    }
+
+    /// A fully-zeroed CompareOptions. Use struct-update syntax to set only
+    /// what a specific test needs: `CompareOptions { compare_name: true, ..default_options() }`
+    fn default_options() -> CompareOptions {
+        CompareOptions {
+            compare_content:    false,
+            compare_name:       false,
+            compare_size:       false,
+            quick_content_check: false,
+            everything_name:    false,
+            everything_size:    false,
+            bidirectional:      false,
+            async_compare:      false,
+            hdd_optimized:      false,
+            delete_duplicates:  false,
+            debug:              false,
+            enhanced_async:     false,
+            force_delete:       false,
+            intra_folder:       false,
+            fuzzy:              false,
+            tolerance:          0,
+            fuzzy_as_dupes:     false,
+            compare_stem:       false,
+            compare_ext:        false,
+        }
+    }
+
+    /// Options for a plain content-based comparison (the most common mode).
+    fn content_options() -> CompareOptions {
+        CompareOptions { compare_content: true, compare_size: true, ..default_options() }
+    }
+
+    /// Convenience: collect + find for a two-folder run.
+    fn run_find(d1: &TempDir, d2: &TempDir, opts: &CompareOptions) -> Vec<DuplicateGroup> {
+        let f1 = collect_files(d1.path().to_str().unwrap(), 0, false).unwrap();
+        let f2 = collect_files(d2.path().to_str().unwrap(), 1, false).unwrap();
+        find_duplicates(
+            f1, f2,
+            d1.path().to_str().unwrap(),
+            d2.path().to_str().unwrap(),
+            opts,
+        ).unwrap()
+    }
+
+    /// Convenience: single-folder intra-comparison.
+    fn run_find_single(d1: &TempDir, opts: &CompareOptions) -> Vec<DuplicateGroup> {
+        let f1 = collect_files(d1.path().to_str().unwrap(), 0, false).unwrap();
+        find_duplicates(f1, vec![], d1.path().to_str().unwrap(), "", opts).unwrap()
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // group_by_name
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_group_by_name_same_name_grouped() {
+        let files = vec![
+            make_file_info("/a/photo.jpg", 100, 0),
+            make_file_info("/b/photo.jpg", 100, 1),
+            make_file_info("/a/other.txt", 100, 0),
+        ];
+        let groups = group_by_name(&files);
+        let photo: Vec<_> = groups.iter()
+            .filter(|g| g[0].path.file_name().unwrap() == "photo.jpg")
+            .collect();
+        assert_eq!(photo.len(), 1, "both photo.jpg entries must be in one group");
+        assert_eq!(photo[0].len(), 2);
+    }
+
+    #[test]
+    fn test_group_by_name_all_different_stays_separate() {
+        let files = vec![
+            make_file_info("/a/a.txt", 100, 0),
+            make_file_info("/b/b.txt", 100, 1),
+        ];
+        let groups = group_by_name(&files);
+        assert!(groups.iter().all(|g| g.len() == 1),
+            "distinct filenames must each get their own group");
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // group_by_stem  (new in v0.1.13)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_group_by_stem_different_extensions_grouped() {
+        // photo.jpg / photo.png / photo.bmp all share stem "photo"
+        let files = vec![
+            make_file_info("/a/photo.jpg", 100, 0),
+            make_file_info("/b/photo.png", 100, 1),
+            make_file_info("/c/photo.bmp", 100, 0),
+        ];
+        let groups = group_by_stem(&files);
+        assert_eq!(groups.len(), 1, "all three share stem 'photo'");
+        assert_eq!(groups[0].len(), 3);
+    }
+
+    #[test]
+    fn test_group_by_stem_different_stems_stay_separate() {
+        let files = vec![
+            make_file_info("/a/photo.jpg",  100, 0),
+            make_file_info("/b/backup.jpg", 100, 1),
+        ];
+        let groups = group_by_stem(&files);
+        assert_eq!(groups.len(), 2, "different stems must produce separate groups");
+    }
+
+    #[test]
+    fn test_group_by_stem_no_extension_shares_stem() {
+        // "README"    -> file_stem = "README"
+        // "README.md" -> file_stem = "README"   (stdlib strips only the last dot-suffix)
+        let files = vec![
+            make_file_info("/a/README",    100, 0),
+            make_file_info("/b/README.md", 100, 1),
+        ];
+        let groups = group_by_stem(&files);
+        assert_eq!(groups.len(), 1, "README and README.md share stem 'README'");
+        assert_eq!(groups[0].len(), 2);
+    }
+
+    #[test]
+    fn test_group_by_stem_compound_extension() {
+        // file_stem strips only the *last* suffix:
+        // "archive.tar.gz"  -> "archive.tar"
+        // "archive.tar.bz2" -> "archive.tar"   → same group
+        let files = vec![
+            make_file_info("/a/archive.tar.gz",  100, 0),
+            make_file_info("/b/archive.tar.bz2", 100, 1),
+        ];
+        let groups = group_by_stem(&files);
+        assert_eq!(groups.len(), 1,
+            "both share stem 'archive.tar' (stdlib strips only the last suffix)");
+    }
+
+    #[test]
+    fn test_group_by_stem_case_sensitive() {
+        // Stem comparison is case-sensitive (consistent with group_by_name).
+        let files = vec![
+            make_file_info("/a/Photo.jpg", 100, 0),
+            make_file_info("/b/photo.jpg", 100, 1),
+        ];
+        let groups = group_by_stem(&files);
+        assert_eq!(groups.len(), 2,
+            "stem comparison is case-sensitive: 'Photo' != 'photo'");
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // group_by_ext  (new in v0.1.13)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_group_by_ext_same_extension_grouped() {
+        let files = vec![
+            make_file_info("/a/photo.jpg",    100, 0),
+            make_file_info("/b/vacation.jpg", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+    }
+
+    #[test]
+    fn test_group_by_ext_case_insensitive() {
+        // .JPG and .jpg must land in the same group.
+        let files = vec![
+            make_file_info("/a/photo.JPG",    100, 0),
+            make_file_info("/b/vacation.jpg", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 1, ".JPG and .jpg must match case-insensitively");
+    }
+
+    #[test]
+    fn test_group_by_ext_different_extensions_separated() {
+        let files = vec![
+            make_file_info("/a/photo.jpg",    100, 0),
+            make_file_info("/b/document.pdf", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn test_group_by_ext_no_extension_grouped_under_empty_key() {
+        // Files without an extension share the empty-string key.
+        let files = vec![
+            make_file_info("/a/Makefile",   100, 0),
+            make_file_info("/b/Dockerfile", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 1, "both have no extension → same group");
+        assert_eq!(groups[0].len(), 2);
+    }
+
+    #[test]
+    fn test_group_by_ext_no_ext_vs_with_ext_separated() {
+        let files = vec![
+            make_file_info("/a/Makefile",    100, 0),
+            make_file_info("/b/Makefile.mk", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 2, "no-extension and .mk must be separate groups");
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // format_size
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test] fn test_format_size_zero()         { assert_eq!(format_size(0),               "0 bytes"); }
+    #[test] fn test_format_size_small_bytes()  { assert_eq!(format_size(512),             "512 bytes"); }
+    #[test] fn test_format_size_boundary_1kb() { assert_eq!(format_size(1024),            "1.00 KB"); }
+    #[test] fn test_format_size_2kb()          { assert_eq!(format_size(2048),            "2.00 KB"); }
+    #[test] fn test_format_size_boundary_1mb() { assert_eq!(format_size(1024*1024),       "1.00 MB"); }
+    #[test] fn test_format_size_boundary_1gb() { assert_eq!(format_size(1024*1024*1024),  "1.00 GB"); }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // has_files_from_both_folders
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_has_both_folders_true() {
+        let files = vec![
+            make_file_info("/a/f.txt", 10, 0),
+            make_file_info("/b/f.txt", 10, 1),
+        ];
+        assert!(has_files_from_both_folders(&files));
+    }
+
+    #[test]
+    fn test_has_both_folders_only_folder0() {
+        let files = vec![
+            make_file_info("/a/f.txt", 10, 0),
+            make_file_info("/a/g.txt", 10, 0),
+        ];
+        assert!(!has_files_from_both_folders(&files));
+    }
+
+    #[test]
+    fn test_has_both_folders_empty_slice() {
+        assert!(!has_files_from_both_folders(&[]));
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // sanitize_path
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_sanitize_path_trailing_space_stripped() {
+        let p = sanitize_path(Path::new("/some/path/name with space "));
+        let last = p.file_name().unwrap().to_string_lossy();
+        assert!(!last.ends_with(' '),
+            "trailing space must be stripped from the last component");
+    }
+
+    #[test]
+    fn test_sanitize_path_regular_path_unchanged() {
+        let p = sanitize_path(Path::new("/normal/path/file.txt"));
+        assert_eq!(p, PathBuf::from("/normal/path/file.txt"));
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // calculate_file_hash
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_hash_identical_content_same_hash() {
+        let d = TempDir::new("hash_same");
+        let f1 = d.path().join("a.txt");
+        let f2 = d.path().join("b.txt");
+        write_file(&f1, b"hello world");
+        write_file(&f2, b"hello world");
+        let i1 = FileInfo { path: f1, size: 11, folder_index: 0 };
+        let i2 = FileInfo { path: f2, size: 11, folder_index: 1 };
+        assert_eq!(
+            calculate_file_hash(&i1, false).unwrap(),
+            calculate_file_hash(&i2, false).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_hash_different_content_different_hash() {
+        let d = TempDir::new("hash_diff");
+        let f1 = d.path().join("a.txt");
+        let f2 = d.path().join("b.txt");
+        write_file(&f1, b"hello");
+        write_file(&f2, b"world");
+        let i1 = FileInfo { path: f1, size: 5, folder_index: 0 };
+        let i2 = FileInfo { path: f2, size: 5, folder_index: 1 };
+        assert_ne!(
+            calculate_file_hash(&i1, false).unwrap(),
+            calculate_file_hash(&i2, false).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_hash_quick_equals_full_for_small_file() {
+        // Files smaller than 2 × QUICKCHECK_SIZE are read entirely in both
+        // modes, so the resulting hash must be identical.
+        let d = TempDir::new("hash_qk");
+        let f = d.path().join("small.bin");
+        write_file(&f, b"tiny content here!");
+        let info = FileInfo { path: f, size: 18, folder_index: 0 };
+        assert_eq!(
+            calculate_file_hash(&info, false).unwrap(),
+            calculate_file_hash(&info, true).unwrap(),
+            "quick hash must equal full hash for files well below the quick-check threshold",
+        );
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // chunked_fuzzy_compare
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_fuzzy_compare_identical_zero_diff() {
+        let d = TempDir::new("fuz_id");
+        let f1 = d.path().join("a.bin");
+        let f2 = d.path().join("b.bin");
+        write_file(&f1, &vec![0u8; 4096]);
+        write_file(&f2, &vec![0u8; 4096]);
+        assert_eq!(chunked_fuzzy_compare(&f1, &f2, false).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_fuzzy_compare_one_byte_difference() {
+        let d = TempDir::new("fuz_1b");
+        let f1 = d.path().join("a.bin");
+        let f2 = d.path().join("b.bin");
+        let mut cb = vec![0u8; 4096];
+        cb[2048] = 0xFF;
+        write_file(&f1, &vec![0u8; 4096]);
+        write_file(&f2, &cb);
+        assert_eq!(chunked_fuzzy_compare(&f1, &f2, false).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_fuzzy_compare_multiple_scattered_diffs() {
+        let d = TempDir::new("fuz_mb");
+        let f1 = d.path().join("a.bin");
+        let f2 = d.path().join("b.bin");
+        let ca = vec![0u8; 1024];
+        let mut cb = vec![0u8; 1024];
+        cb[0]   = 1;
+        cb[100] = 1;
+        cb[500] = 1;  // 3 bytes differ
+        write_file(&f1, &ca);
+        write_file(&f2, &cb);
+        assert_eq!(chunked_fuzzy_compare(&f1, &f2, false).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_fuzzy_compare_all_bytes_differ() {
+        let d = TempDir::new("fuz_all");
+        let f1 = d.path().join("a.bin");
+        let f2 = d.path().join("b.bin");
+        write_file(&f1, &vec![0x00u8; 256]);
+        write_file(&f2, &vec![0xFFu8; 256]);
+        assert_eq!(chunked_fuzzy_compare(&f1, &f2, false).unwrap(), 256);
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // find_duplicates — integration tests
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── basic content matching ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_fd_exact_content_match_found() {
+        let d1 = TempDir::new("fd_ec1");
+        let d2 = TempDir::new("fd_ec2");
+        write_file(&d1.path().join("a.txt"), b"duplicate content");
+        write_file(&d2.path().join("a.txt"), b"duplicate content");
+        let dups = run_find(&d1, &d2, &content_options());
+        assert_eq!(dups.len(), 1, "one duplicate group expected");
+        assert_eq!(dups[0].match_kind, MatchKind::Exact);
+    }
+
+    #[test]
+    fn test_fd_different_content_no_match() {
+        let d1 = TempDir::new("fd_dc1");
+        let d2 = TempDir::new("fd_dc2");
+        write_file(&d1.path().join("a.txt"), b"content A side!");
+        write_file(&d2.path().join("b.txt"), b"content B side!");
+        let dups = run_find(&d1, &d2, &content_options());
+        assert!(dups.is_empty(), "different content → no duplicate");
+    }
+
+    #[test]
+    fn test_fd_size_mismatch_eliminated_before_hash() {
+        let d1 = TempDir::new("fd_sm1");
+        let d2 = TempDir::new("fd_sm2");
+        write_file(&d1.path().join("a.txt"), b"short");
+        write_file(&d2.path().join("a.txt"), b"much longer content here");
+        let dups = run_find(&d1, &d2, &content_options());
+        assert!(dups.is_empty(), "size-mismatched files must be eliminated before hashing");
+    }
+
+    #[test]
+    fn test_fd_multiple_groups_found() {
+        let d1 = TempDir::new("fd_mg1");
+        let d2 = TempDir::new("fd_mg2");
+        write_file(&d1.path().join("alpha.txt"), b"group one match");
+        write_file(&d2.path().join("alpha.txt"), b"group one match");
+        write_file(&d1.path().join("beta.dat"),  b"group two!!");
+        write_file(&d2.path().join("beta.dat"),  b"group two!!");
+        let dups = run_find(&d1, &d2, &content_options());
+        assert_eq!(dups.len(), 2, "two independent duplicate groups should both be found");
+    }
+
+    // ── name mode (-n) ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fd_name_mode_same_name_same_size_matches() {
+        let d1 = TempDir::new("fd_nm1");
+        let d2 = TempDir::new("fd_nm2");
+        write_file(&d1.path().join("photo.txt"), b"aaaa");
+        write_file(&d2.path().join("photo.txt"), b"bbbb"); // same name+size, different content
+        let opts = CompareOptions { compare_name: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1, "same name + same size → match in -n mode");
+    }
+
+    #[test]
+    fn test_fd_name_mode_different_name_no_match() {
+        let d1 = TempDir::new("fd_nm3");
+        let d2 = TempDir::new("fd_nm4");
+        write_file(&d1.path().join("photo.txt"), b"aaaa");
+        write_file(&d2.path().join("other.txt"), b"bbbb");
+        let opts = CompareOptions { compare_name: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert!(dups.is_empty(), "different names → no match even with same size");
+    }
+
+    // ── stem mode (-k) ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fd_stem_mode_matches_different_extension() {
+        let d1 = TempDir::new("fd_sk1");
+        let d2 = TempDir::new("fd_sk2");
+        write_file(&d1.path().join("photo.jpg"), b"same");
+        write_file(&d2.path().join("photo.png"), b"diff"); // same stem "photo", same size
+        let opts = CompareOptions { compare_stem: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1, "same stem + same size → match in -k mode");
+    }
+
+    #[test]
+    fn test_fd_stem_mode_no_match_different_stem() {
+        let d1 = TempDir::new("fd_sk3");
+        let d2 = TempDir::new("fd_sk4");
+        write_file(&d1.path().join("photo.jpg"),  b"same");
+        write_file(&d2.path().join("backup.jpg"), b"same"); // different stem
+        let opts = CompareOptions { compare_stem: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert!(dups.is_empty(), "different stems → no match in -k mode");
+    }
+
+    #[test]
+    fn test_fd_stem_and_content_no_match_if_content_differs() {
+        let d1 = TempDir::new("fd_sk5");
+        let d2 = TempDir::new("fd_sk6");
+        // Same stem + same size, but different content → with -k -c: no match.
+        write_file(&d1.path().join("doc.txt"), b"v1ab");
+        write_file(&d2.path().join("doc.pdf"), b"v2ab");
+        let opts = CompareOptions {
+            compare_stem:    true,
+            compare_content: true,
+            compare_size:    true,
+            ..default_options()
+        };
+        let dups = run_find(&d1, &d2, &opts);
+        assert!(dups.is_empty(),
+            "same stem but different content → no match when -k combined with -c");
+    }
+
+    // ── extension mode (-e) ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fd_ext_mode_matches_same_extension() {
+        let d1 = TempDir::new("fd_ex1");
+        let d2 = TempDir::new("fd_ex2");
+        write_file(&d1.path().join("a.jpg"), b"aaaa");
+        write_file(&d2.path().join("b.jpg"), b"bbbb"); // same ext, same size
+        let opts = CompareOptions { compare_ext: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1, "same extension + same size → match in -e mode");
+    }
+
+    #[test]
+    fn test_fd_ext_mode_case_insensitive() {
+        let d1 = TempDir::new("fd_ex3");
+        let d2 = TempDir::new("fd_ex4");
+        write_file(&d1.path().join("a.JPG"), b"aaaa");
+        write_file(&d2.path().join("b.jpg"), b"bbbb");
+        let opts = CompareOptions { compare_ext: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1, ".JPG and .jpg must match case-insensitively in -e mode");
+    }
+
+    #[test]
+    fn test_fd_ext_mode_no_match_different_extension() {
+        let d1 = TempDir::new("fd_ex5");
+        let d2 = TempDir::new("fd_ex6");
+        write_file(&d1.path().join("a.jpg"), b"aaaa");
+        write_file(&d2.path().join("b.png"), b"bbbb");
+        let opts = CompareOptions { compare_ext: true, ..default_options() };
+        let dups = run_find(&d1, &d2, &opts);
+        assert!(dups.is_empty(), "different extensions → no match in -e mode");
+    }
+
+    #[test]
+    fn test_fd_ext_and_stem_equals_name() {
+        // Combining -e and -k is approximately equivalent to -n (full filename).
+        let d1 = TempDir::new("fd_ex7");
+        let d2 = TempDir::new("fd_ex8");
+        write_file(&d1.path().join("photo.jpg"), b"aaaa");
+        write_file(&d2.path().join("photo.png"), b"bbbb"); // same stem, different ext
+        let opts = CompareOptions {
+            compare_stem: true,
+            compare_ext:  true,
+            ..default_options()
+        };
+        let dups = run_find(&d1, &d2, &opts);
+        assert!(dups.is_empty(),
+            "with both -k and -e, stem must match AND extension must match (like -n)");
+    }
+
+    // ── intra-folder / single-folder mode (-1 / -b) ───────────────────────────
+
+    #[test]
+    fn test_fd_intra_folder_finds_internal_duplicates() {
+        let d1 = TempDir::new("fd_if1");
+        write_file(&d1.path().join("a.txt"), b"same content here!");
+        write_file(&d1.path().join("b.txt"), b"same content here!");
+        let opts = CompareOptions {
+            compare_content: true,
+            compare_size:    true,
+            intra_folder:    true,
+            ..default_options()
+        };
+        let dups = run_find_single(&d1, &opts);
+        assert_eq!(dups.len(), 1, "intra-folder mode must find duplicates within one folder");
+    }
+
+    #[test]
+    fn test_fd_intra_folder_no_match_different_content() {
+        let d1 = TempDir::new("fd_if2");
+        write_file(&d1.path().join("a.txt"), b"content A is here");
+        write_file(&d1.path().join("b.txt"), b"content B is here");
+        let opts = CompareOptions {
+            compare_content: true,
+            compare_size:    true,
+            intra_folder:    true,
+            ..default_options()
+        };
+        let dups = run_find_single(&d1, &opts);
+        assert!(dups.is_empty(), "no intra-folder match when content differs");
+    }
+
+    // ── fuzzy mode (-Z -t N) ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_fd_fuzzy_within_tolerance_found() {
+        let d1 = TempDir::new("fd_fz1");
+        let d2 = TempDir::new("fd_fz2");
+        let ca = vec![0u8; 512];
+        let mut cb = vec![0u8; 512];
+        cb[10] = 1;
+        cb[20] = 1; // exactly 2 bytes differ
+        write_file(&d1.path().join("a.bin"), &ca);
+        write_file(&d2.path().join("b.bin"), &cb);
+        let opts = CompareOptions {
+            compare_content: true,
+            compare_size:    true,
+            fuzzy:           true,
+            tolerance:       5,
+            ..default_options()
+        };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1, "2-byte difference with tolerance=5 → fuzzy match");
+        assert!(
+            matches!(dups[0].match_kind, MatchKind::Fuzzy { bytes_differing: 2 }),
+            "match kind must be Fuzzy with bytes_differing=2, got {:?}", dups[0].match_kind
+        );
+    }
+
+    #[test]
+    fn test_fd_fuzzy_exceeds_tolerance_not_found() {
+        let d1 = TempDir::new("fd_fz3");
+        let d2 = TempDir::new("fd_fz4");
+        write_file(&d1.path().join("a.bin"), &vec![0x00u8; 512]);
+        write_file(&d2.path().join("b.bin"), &vec![0xFFu8; 512]); // 512 bytes differ
+        let opts = CompareOptions {
+            compare_content: true,
+            compare_size:    true,
+            fuzzy:           true,
+            tolerance:       10,
+            ..default_options()
+        };
+        let dups = run_find(&d1, &d2, &opts);
+        assert!(dups.is_empty(), "512-byte difference with tolerance=10 → no match");
+    }
+
+    #[test]
+    fn test_fd_fuzzy_exact_match_not_reported_as_fuzzy() {
+        // A file pair with zero byte difference must be reported as Exact,
+        // not Fuzzy, even when -Z is active.
+        let d1 = TempDir::new("fd_fz5");
+        let d2 = TempDir::new("fd_fz6");
+        write_file(&d1.path().join("a.bin"), b"identical content!!");
+        write_file(&d2.path().join("b.bin"), b"identical content!!");
+        let opts = CompareOptions {
+            compare_content: true,
+            compare_size:    true,
+            fuzzy:           true,
+            tolerance:       100,
+            ..default_options()
+        };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1);
+        assert_eq!(dups[0].match_kind, MatchKind::Exact,
+            "identical files must be reported as Exact even when -Z is active");
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Regressions
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ── BUG: DuplicateGroup.size was the sum of all files, not one file's size ──
+
+    #[test]
+    fn test_regression_group_size_is_single_file_size_not_sum() {
+        // Before the fix, sync_content_compare_with_file_progress computed
+        // group_size = Σ file.size (e.g. 2 × 16 B = 32 B).
+        // display_results then multiplied by folder1_files.len(), giving 2×32=64
+        // instead of the correct 1×16=16.  The fix uses group[0].size.
+        let d1 = TempDir::new("gs_r1");
+        let d2 = TempDir::new("gs_r2");
+        let content = b"exactly sixteen!"; // 16 bytes
+        write_file(&d1.path().join("f.txt"), content);
+        write_file(&d2.path().join("f.txt"), content);
+        let dups = run_find(&d1, &d2, &content_options());
+        assert_eq!(dups.len(), 1);
+        assert_eq!(
+            dups[0].size, 16,
+            "DuplicateGroup.size must be one file's size (16 B), not the group sum (32 B)"
+        );
+    }
+
+    // ── BUG: -C + -Z fuzzy candidates were always empty ───────────────────────
+
+    #[test]
+    fn test_regression_quickcheck_plus_fuzzy_catches_near_dupes() {
+        // Before the fix, the fuzzy stage subtracted exact_paths from
+        // quick_checked_groups (files that *passed* quick-check).  Because those
+        // files all became exact matches, the result was an empty candidate set —
+        // near-duplicates that *failed* quick-check were never considered.
+        //
+        // Fix: all three fuzzy sites now subtract from saved_name_filtered, which
+        // is a snapshot of all candidates taken before any branch consumes them.
+        let d1 = TempDir::new("cz_r1");
+        let d2 = TempDir::new("cz_r2");
+        let ca = vec![42u8; 64];
+        let mut cb = vec![42u8; 64];
+        cb[32] = 99; // 1 byte differs → different hash → fails quick-check gate
+        write_file(&d1.path().join("a.bin"), &ca);
+        write_file(&d2.path().join("b.bin"), &cb);
+        let opts = CompareOptions {
+            quick_content_check: true,
+            fuzzy:               true,
+            tolerance:           5,
+            ..default_options()
+        };
+        let dups = run_find(&d1, &d2, &opts);
+        assert_eq!(dups.len(), 1,
+            "near-duplicate must be found even when -C and -Z are combined");
+        assert!(matches!(dups[0].match_kind, MatchKind::Fuzzy { .. }),
+            "must be reported as a fuzzy match, not exact");
+    }
+
+    // ── BUG: async -1 (single-folder) found zero duplicates ───────────────────
+
+    #[test]
+    fn test_regression_async_intra_folder_finds_duplicates() {
+        // Before the fix, async_content_compare_with_file_progress contained an
+        // unconditional !has_files_from_both_folders() guard.  In intra-folder
+        // mode every file has folder_index==0, so the guard always fired and
+        // every group was silently skipped.
+        let d1 = TempDir::new("ai_r1");
+        write_file(&d1.path().join("a.txt"), b"same content here!!");
+        write_file(&d1.path().join("b.txt"), b"same content here!!");
+        let opts = CompareOptions {
+            compare_content: true,
+            compare_size:    true,
+            async_compare:   true,
+            intra_folder:    true,
+            ..default_options()
+        };
+        let dups = run_find_single(&d1, &opts);
+        assert_eq!(dups.len(), 1,
+            "async intra-folder mode must find duplicates (not silently skip every group)");
     }
 }
