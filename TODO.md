@@ -1,5 +1,6 @@
-- [ ] Fix a potential mistake with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **not yet reproduced/confirmed fixed; keep open**
+- [ ] Fix a potential flaw with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **not yet reproduced/confirmed fixed; keep open**
 - [ ] Sort output: currently sorts by first file path (default, added v0.1.12). Add flags for sort by size (`--sort-size`), modification time (`--sort-mtime`), reverse order (`--sort-reverse`)
 - [ ] Fuzzy Mode 2: format-aware metadata skip (JPEG EXIF block, MP4/MOV atoms including trailing atoms) — hash only payload, skip known metadata regions
 - [ ] Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`
 - [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)
+- [ ] [`TEST`] File like "Act 1. The Noon.mp4" will count as extention only the `.mp4`

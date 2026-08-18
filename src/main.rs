@@ -1120,10 +1120,7 @@ fn async_content_compare_with_file_progress(
             for group in chunk {
                 progress.inc(1);
 
-                // In intra-folder mode (-1 / -b), all files carry folder_index == 0,
-                // so has_files_from_both_folders always returns false.  Only enforce
-                // the cross-folder requirement when we are NOT in intra-folder mode.
-                if group.len() <= 1 || (!options.intra_folder && !has_files_from_both_folders(&group)) {
+                if group.len() <= 1 {
                     continue;
                 }
 
@@ -1170,7 +1167,11 @@ fn async_content_compare_with_file_progress(
                 let mut local_duplicates = Vec::new();
 
                 for (_, content_group) in content_groups {
-                    if content_group.len() > 1 && has_files_from_both_folders(&content_group) {
+                    // Match the sync-path guard: without -B, any content group with >1
+                    // file is reported (covers intra-folder where all files share
+                    // folder_index 0).  With -B, only cross-folder groups are kept.
+                    if content_group.len() > 1 &&
+                       (!options.bidirectional || has_files_from_both_folders(&content_group)) {
                         let mut files_by_folder = vec![Vec::new(), Vec::new()];
 
                         for file in content_group {
@@ -2694,10 +2695,13 @@ mod tests {
 
     #[test]
     fn test_regression_async_intra_folder_finds_duplicates() {
-        // Before the fix, async_content_compare_with_file_progress contained an
-        // unconditional !has_files_from_both_folders() guard.  In intra-folder
-        // mode every file has folder_index==0, so the guard always fired and
-        // every group was silently skipped.
+        // Before the fix, the inner content-group guard inside the async thread
+        // was a bare `has_files_from_both_folders(&content_group)` with no
+        // bidirectional / intra-folder bypass.  In intra-folder mode every file
+        // carries folder_index == 0, so this guard always returned false and no
+        // DuplicateGroup was ever emitted — even though hashing had found
+        // identical files.  Fixed to `!options.bidirectional ||
+        // has_files_from_both_folders(...)`, matching the sync path.
         let d1 = TempDir::new("ai_r1");
         write_file(&d1.path().join("a.txt"), b"same content here!!");
         write_file(&d1.path().join("b.txt"), b"same content here!!");

@@ -5,6 +5,11 @@ I keep all changes here, so versions can be easily compared between themself
 
 ---
 
+## Changes: V0.1.14
+- **FIX: Bring the async inner guard in line with the other two paths (cause of 50/51 tests passing)**
+
+---
+
 ## Changes: V0.1.13
 - **NEW: Stem comparison mode (`-k` / `--stem`):** Groups files by their filename stem — the portion before the last `.`. For example `photo.jpg` and `photo.png` both have stem `photo` and will be treated as candidates. Useful for finding renamed copies of the same file where only the format changed. Comparison is case-sensitive, consistent with the existing `-n` mode. Stacks on top of size grouping (same stem + same size), and can be freely combined with `-e`, `-n`, and `-c`.
 - **NEW: Extension comparison mode (`-e` / `--ext`):** Groups files that share the same extension. Comparison is **case-insensitive** so `.JPG` and `.jpg` match. Files with no extension are grouped together under an empty key. Like `-k`, stacks on top of size grouping (same extension + same size). Combining `-k` and `-e` together behaves like `-n` — both the stem and the extension must match, which is equivalent to requiring the full filename.
