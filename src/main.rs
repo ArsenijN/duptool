@@ -1,5 +1,13 @@
 use clap::{Arg, ArgAction, Command};
 use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
+
+/// Prints a line in normal runs; silenced completely when running under
+/// `cargo test` so test output stays clean and progress-bar-free.
+macro_rules! vprintln {
+    ($($arg:tt)*) => {
+        if !cfg!(test) { println!($($arg)*); }
+    };
+}
 use md5::Context; // Use Context instead of Md5
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, create_dir_all, rename};
@@ -419,13 +427,19 @@ fn main() -> io::Result<()> {
 
 fn collect_files(root: &str, folder_index: usize, hdd_optimized: bool) -> io::Result<Vec<FileInfo>> {
     let mut files = Vec::new();
-    
-    let progress = ProgressBar::new_spinner();
-    progress.set_message(format!("Scanning {}...", root));
-    let progress_style = ProgressStyle::default_spinner()
-        .template("{spinner:.green} {msg} ({pos} files found)")
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    progress.set_style(progress_style);
+
+    // Hidden in test mode so cargo test output stays clean.
+    let progress = if cfg!(test) {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.set_message(format!("Scanning {}...", root));
+        let style = ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg} ({pos} files found)")
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        pb.set_style(style);
+        pb
+    };
     
     for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
@@ -456,7 +470,7 @@ fn find_duplicates(
     folder2: &str,
     options: &CompareOptions
 ) -> io::Result<Vec<DuplicateGroup>> {
-    println!("Comparing files...");
+    vprintln!("Comparing files...");
     
     // Group files by size as a first pass
     let mut size_groups: HashMap<u64, Vec<FileInfo>> = HashMap::new();
@@ -493,7 +507,7 @@ fn find_duplicates(
             .collect()
     };
 
-    println!("Found {} potential duplicate groups by size", potential_duplicates.len());
+    vprintln!("Found {} potential duplicate groups by size", potential_duplicates.len());
     
     // Next, apply name comparison if needed
     let mut name_filtered_groups = Vec::new();
@@ -508,7 +522,7 @@ fn find_duplicates(
                 }
             }
         }
-        println!("Found {} potential duplicate groups by name", name_filtered_groups.len());
+        vprintln!("Found {} potential duplicate groups by name", name_filtered_groups.len());
     } else {
         name_filtered_groups = potential_duplicates;
     }
@@ -524,7 +538,7 @@ fn find_duplicates(
                 }
             }
         }
-        println!("Found {} potential duplicate groups by stem", stem_filtered.len());
+        vprintln!("Found {} potential duplicate groups by stem", stem_filtered.len());
         stem_filtered
     } else {
         name_filtered_groups
@@ -541,7 +555,7 @@ fn find_duplicates(
                 }
             }
         }
-        println!("Found {} potential duplicate groups by extension", ext_filtered.len());
+        vprintln!("Found {} potential duplicate groups by extension", ext_filtered.len());
         ext_filtered
     } else {
         name_filtered_groups
@@ -594,17 +608,27 @@ fn find_duplicates(
 
         let m = MultiProgress::new();
 
-        // Group progress bar
-        let progress_bar = m.add(ProgressBar::new(total_groups as u64));
-        progress_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+        // Group progress bar — hidden when running under cargo test.
+        let progress_bar = if cfg!(test) {
+            m.add(ProgressBar::hidden())
+        } else {
+            let pb = m.add(ProgressBar::new(total_groups as u64));
+            pb.set_style(ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+            pb
+        };
 
-        // File progress bar
-        let file_progress = m.add(ProgressBar::new(total_files));
-        file_progress.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+        // File progress bar — hidden when running under cargo test.
+        let file_progress = if cfg!(test) {
+            m.add(ProgressBar::hidden())
+        } else {
+            let fp = m.add(ProgressBar::new(total_files));
+            fp.set_style(ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+            fp
+        };
 
         let mut processed_files = 0u64;
 
@@ -629,7 +653,8 @@ fn find_duplicates(
             .collect();
         progress_bar.finish();
         file_progress.finish();
-        println!("After quick check: {} groups remain", quick_checked_groups.len());
+        // In production this prints above the finished bars; silenced in tests.
+        m.suspend(|| vprintln!("After quick check: {} groups remain", quick_checked_groups.len()));
 
         // Output results based on quick check only, no full hash
         let mut duplicates = Vec::new();
@@ -665,9 +690,9 @@ fn find_duplicates(
                 .filter(|g| g.len() > 1 && has_files_from_both_folders(g))
                 .collect();
             if !fuzzy_candidates.is_empty() {
-                println!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
+                vprintln!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
                 let fuzzy_results = fuzzy_compare_groups(&fuzzy_candidates, options)?;
-                println!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
+                vprintln!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
                 duplicates.extend(fuzzy_results);
             }
         }
@@ -693,7 +718,7 @@ fn find_duplicates(
                     .collect::<Vec<Vec<FileInfo>>>()
             })
             .collect();
-        println!("After quick check: {} groups remain", quick_checked_groups.len());
+        vprintln!("After quick check: {} groups remain", quick_checked_groups.len());
     }
 
     // --- FULL HASH FOR ALL FILES IN GROUPS ---
@@ -706,17 +731,27 @@ fn find_duplicates(
         // --- Use MultiProgress for two progress bars ---
         let m = MultiProgress::new();
 
-        // Group progress bar (per group)
-        let progress_bar = m.add(ProgressBar::new(total_groups as u64));
-        progress_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+        // Group progress bar (per group) — hidden when running under cargo test.
+        let progress_bar = if cfg!(test) {
+            m.add(ProgressBar::hidden())
+        } else {
+            let pb = m.add(ProgressBar::new(total_groups as u64));
+            pb.set_style(ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} groups ({eta})")
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+            pb
+        };
 
-        // File progress bar (per file)
-        let file_progress = m.add(ProgressBar::new(total_files));
-        file_progress.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+        // File progress bar (per file) — hidden when running under cargo test.
+        let file_progress = if cfg!(test) {
+            m.add(ProgressBar::hidden())
+        } else {
+            let fp = m.add(ProgressBar::new(total_files));
+            fp.set_style(ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files ({eta})")
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+            fp
+        };
 
         // Clone before moving into closure so the fuzzy stage can still use
         // quick_checked_groups afterwards.
@@ -755,15 +790,25 @@ fn find_duplicates(
         let total_files: u64 = quick_checked_groups.iter().map(|g| g.len() as u64).sum();
 
         let m = MultiProgress::new();
-        let group_bar = m.add(ProgressBar::new(total_groups as u64));
-        group_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} groups (finalizing) {eta}")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+        let group_bar = if cfg!(test) {
+            m.add(ProgressBar::hidden())
+        } else {
+            let pb = m.add(ProgressBar::new(total_groups as u64));
+            pb.set_style(ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.yellow/blue} {pos}/{len} groups (finalizing) {eta}")
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+            pb
+        };
 
-        let file_bar = m.add(ProgressBar::new(total_files));
-        file_bar.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files (finalizing) {eta}")
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+        let file_bar = if cfg!(test) {
+            m.add(ProgressBar::hidden())
+        } else {
+            let fb = m.add(ProgressBar::new(total_files));
+            fb.set_style(ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.green/white} {pos}/{len} files (finalizing) {eta}")
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?);
+            fb
+        };
 
         let mut final_duplicates = Vec::new();
 
@@ -804,9 +849,9 @@ fn find_duplicates(
                 .filter(|g| g.len() > 1 && has_files_from_both_folders(g))
                 .collect();
             if !fuzzy_candidates.is_empty() {
-                println!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
+                vprintln!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
                 let fuzzy_results = fuzzy_compare_groups(&fuzzy_candidates, options)?;
-                println!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
+                vprintln!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
                 final_duplicates.extend(fuzzy_results);
             }
         }
@@ -854,9 +899,9 @@ fn find_duplicates(
             .collect();
 
         if !fuzzy_candidates.is_empty() {
-            println!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
+            vprintln!("Running fuzzy comparison on {} candidate groups...", fuzzy_candidates.len());
             let fuzzy_results = fuzzy_compare_groups(&fuzzy_candidates, options)?;
-            println!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
+            vprintln!("Fuzzy comparison found {} near-duplicate groups", fuzzy_results.len());
             duplicates.extend(fuzzy_results);
         }
     }
@@ -2206,6 +2251,50 @@ mod tests {
         ];
         let groups = group_by_ext(&files);
         assert_eq!(groups.len(), 2, "no-extension and .mk must be separate groups");
+    }
+
+    #[test]
+    fn test_group_by_ext_dotted_name_only_last_suffix_is_ext() {
+        // "Act 1. The Noon.mp4" — the dot in "1." is part of the stem, NOT the extension.
+        // Path::extension() returns only the text after the *last* dot, so the
+        // extension is "mp4" and not ". The Noon.mp4" or anything else.
+        let files = vec![
+            make_file_info("/a/Act 1. The Noon.mp4", 100, 0),
+            make_file_info("/b/Act 2. The Dusk.mp4", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 1, "both have extension 'mp4'; dots in the title are irrelevant");
+        // Confirm the stem is also correct: everything before the last dot.
+        let stem = Path::new("Act 1. The Noon.mp4")
+            .file_stem()
+            .unwrap()
+            .to_string_lossy();
+        assert_eq!(stem, "Act 1. The Noon",
+            "stem should be everything before the last dot, not affected by title dots");
+    }
+
+    #[test]
+    fn test_group_by_ext_dotted_name_different_ext_separated() {
+        // Same title pattern, different container format → different extension → different group.
+        let files = vec![
+            make_file_info("/a/Act 1. The Noon.mp4", 100, 0),
+            make_file_info("/b/Act 1. The Noon.mkv", 100, 1),
+        ];
+        let groups = group_by_ext(&files);
+        assert_eq!(groups.len(), 2, ".mp4 and .mkv must be in separate groups");
+    }
+
+    #[test]
+    fn test_group_by_stem_dotted_name_groups_by_full_title() {
+        // In -k mode, "Act 1. The Noon.mp4" and "Act 1. The Noon.mkv" share the
+        // same stem "Act 1. The Noon" and should be grouped together.
+        let files = vec![
+            make_file_info("/a/Act 1. The Noon.mp4", 100, 0),
+            make_file_info("/b/Act 1. The Noon.mkv", 100, 1),
+        ];
+        let groups = group_by_stem(&files);
+        assert_eq!(groups.len(), 1, "both share stem 'Act 1. The Noon'");
+        assert_eq!(groups[0].len(), 2);
     }
 
 

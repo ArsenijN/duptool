@@ -3,4 +3,4 @@
 - [ ] Fuzzy Mode 2: format-aware metadata skip (JPEG EXIF block, MP4/MOV atoms including trailing atoms) — hash only payload, skip known metadata regions
 - [ ] Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`
 - [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)
-- [ ] [`TEST`] File like "Act 1. The Noon.mp4" will count as extention only the `.mp4`
+- [x] ~~[`TEST`] File like "Act 1. The Noon.mp4" will count as extention only the `.mp4`~~ -- **done and tested in V.0.1.15**
