@@ -1,6 +1,7 @@
-- [ ] Fix a potential flaw with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **not yet reproduced/confirmed fixed; keep open**
+- [ ] Fix a potential issue with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **not yet reproduced/confirmed fixed; keep open**
 - [ ] Sort output: currently sorts by first file path (default, added v0.1.12). Add flags for sort by size (`--sort-size`), modification time (`--sort-mtime`), reverse order (`--sort-reverse`)
 - [ ] Fuzzy Mode 2: format-aware metadata skip (JPEG EXIF block, MP4/MOV atoms including trailing atoms) — hash only payload, skip known metadata regions
 - [ ] Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`
 - [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)
-- [x] ~~[`TEST`] File like "Act 1. The Noon.mp4" will count as extention only the `.mp4`~~ -- **done and tested in V.0.1.15**
+- [ ] `duptool` may become part of an "DViDedit" - software to repair raw DV streams via few captures (acts as video editor, such as Kdenlive, but for media error correction). Info and implementation is pending -- It's now called dvrepair, and works as separate program. Maybe some features will be inspired from there
+- [x] ~~inter-folder search doesn't work (only one folder specified, doesn't work the comparison and maybe other things) @20260406~~ -- **old opened issue that aren't synced from a laptop. Fixed recently in v0.1.13-0.1.15**
