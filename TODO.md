@@ -4,4 +4,4 @@
 - [ ] Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`
 - [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)
 - [ ] `duptool` may become part of an "DViDedit" - software to repair raw DV streams via few captures (acts as video editor, such as Kdenlive, but for media error correction). Info and implementation is pending -- It's now called dvrepair, and works as separate program. Maybe some features will be inspired from there
-- [x] ~~inter-folder search doesn't work (only one folder specified, doesn't work the comparison and maybe other things) @20260406~~ -- **old opened issue that aren't synced from a laptop. Fixed recently in v0.1.13-0.1.15**
+- [x] ~~Fix requirement of folder1 when trying to check version via `-v`~~ -- **fixed in V0.1.16**

@@ -103,7 +103,7 @@ fn main() -> io::Result<()> {
         )
         .arg(
             Arg::new("folder1")
-                .required(true)
+                .required_unless_present_any(["version", "verbose_version"])
                 .help("First folder to compare (or the only folder in --single mode)")
                 .index(1),
         )
