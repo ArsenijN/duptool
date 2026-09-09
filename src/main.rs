@@ -1547,7 +1547,30 @@ fn move_fuzzy_to_differ(
             _ => 0,
         };
 
-        for file_path in &group.files_by_folder[0] {
+        // See move_duplicates_to_deleted: for an intra-folder group there is no
+        // counterpart elsewhere, so keep one file and only move the rest.
+        let has_folder2_copy = group
+            .files_by_folder
+            .get(1)
+            .map_or(false, |v| !v.is_empty());
+
+        let mut folder1_files: Vec<&PathBuf> = group.files_by_folder[0].iter().collect();
+        folder1_files.sort();
+
+        let files_to_move: Vec<&PathBuf> = if has_folder2_copy {
+            folder1_files
+        } else {
+            if folder1_files.len() <= 1 {
+                continue;
+            }
+            let keeper = folder1_files[0];
+            if options.debug {
+                println!("[FUZZY] Intra-folder group: keeping {}", keeper.display());
+            }
+            folder1_files.into_iter().skip(1).collect()
+        };
+
+        for file_path in files_to_move {
             let sanitized = sanitize_path(file_path);
             let relative = match sanitized.strip_prefix(sanitize_path(folder1)) {
                 Ok(p) => p,
@@ -1560,8 +1583,8 @@ fn move_fuzzy_to_differ(
             };
 
             // -D: only move if the counterpart exists at the same relative
-            // path in folder2. -F or single-mode: skip this check.
-            if !options.force_delete && !folder2.is_empty() {
+            // path in folder2. -F or intra-folder groups: skip this check.
+            if !options.force_delete && has_folder2_copy {
                 let corresponding = sanitize_path(&Path::new(folder2).join(relative));
                 if !corresponding.exists() {
                     if options.debug {
@@ -1639,7 +1662,32 @@ fn move_duplicates_to_deleted(
     }
 
     for duplicate in duplicates {
-        for file_path in &duplicate.files_by_folder[0] {
+        // An intra-folder group has no counterpart in folder2 (single/-b mode, or a
+        // within-folder1 match). There is no "keeper" copy elsewhere, so we must
+        // retain one file of the group here and only move the rest — otherwise every
+        // copy is moved away and the data is lost.
+        let has_folder2_copy = duplicate
+            .files_by_folder
+            .get(1)
+            .map_or(false, |v| !v.is_empty());
+
+        let mut folder1_files: Vec<&PathBuf> = duplicate.files_by_folder[0].iter().collect();
+        folder1_files.sort();
+
+        let files_to_move: Vec<&PathBuf> = if has_folder2_copy {
+            folder1_files
+        } else {
+            if folder1_files.len() <= 1 {
+                continue;
+            }
+            let keeper = folder1_files[0];
+            if options.debug {
+                println!("Intra-folder group: keeping {}", keeper.display());
+            }
+            folder1_files.into_iter().skip(1).collect()
+        };
+
+        for file_path in files_to_move {
             let sanitized_file_path = sanitize_path(file_path);
             let relative_path = match sanitized_file_path.strip_prefix(sanitize_path(folder1)) {
                 Ok(path) => path,
@@ -1658,8 +1706,10 @@ fn move_duplicates_to_deleted(
                 println!("Target path: {}", target_path.display());
             }
 
-            // Only check for corresponding_path if not force_delete
-            if !options.force_delete {
+            // For -D against a real folder2, only move a file whose counterpart
+            // exists at the same relative path there. Skipped for -F and for
+            // intra-folder groups (where the kept copy is the counterpart).
+            if !options.force_delete && has_folder2_copy {
                 let corresponding_path = sanitize_path(&Path::new(folder2).join(relative_path));
                 if !corresponding_path.exists() {
                     if options.debug {
@@ -2804,5 +2854,96 @@ mod tests {
         let dups = run_find_single(&d1, &opts);
         assert_eq!(dups.len(), 1,
             "async intra-folder mode must find duplicates (not silently skip every group)");
+    }
+
+    // ── BUG: -D on an intra-folder group moved *every* copy away ──────────────
+
+    #[test]
+    fn test_regression_intra_folder_delete_keeps_one_copy() {
+        // Before the fix, move_duplicates_to_deleted iterated every file in
+        // files_by_folder[0] and moved them all. With no folder2 counterpart
+        // (single / -b mode) that left zero copies in place — total data loss.
+        // The `!options.force_delete` guard only papered over it when the CWD
+        // happened to equal folder1 (so relative paths resolved to real files).
+        let d1 = TempDir::new("intra_del_keep1");
+        write_file(&d1.path().join("dup_a.bin"), b"identical payload");
+        write_file(&d1.path().join("dup_b.bin"), b"identical payload");
+        write_file(&d1.path().join("unique.bin"), b"something else entirely");
+
+        let opts = CompareOptions {
+            compare_content:   true,
+            compare_size:      true,
+            intra_folder:      true,
+            delete_duplicates: true,
+            ..default_options()
+        };
+        let group = DuplicateGroup {
+            files_by_folder: vec![
+                vec![
+                    d1.path().join("dup_a.bin"),
+                    d1.path().join("dup_b.bin"),
+                ],
+                vec![],
+            ],
+            size: 17,
+            match_kind: MatchKind::Exact,
+        };
+
+        move_duplicates_to_deleted(
+            std::slice::from_ref(&group),
+            d1.path().to_str().unwrap(),
+            "",
+            &opts,
+        ).unwrap();
+
+        let remaining: Vec<_> = (["dup_a.bin", "dup_b.bin"])
+            .iter()
+            .filter(|n| d1.path().join(n).exists())
+            .collect();
+        assert_eq!(remaining.len(), 1,
+            "exactly one copy of an intra-folder duplicate group must be kept in place");
+        assert!(d1.path().join("deleted").join("dup_b.bin").exists(),
+            "the other copy must be moved into deleted/");
+        assert!(d1.path().join("unique.bin").exists(),
+            "unrelated files must never be touched");
+    }
+
+    #[test]
+    fn test_regression_two_folder_delete_still_moves_matched_copy() {
+        // Guard against over-correcting: with a real folder2 counterpart, -D
+        // must still move the folder1 copy (the folder2 file is the keeper).
+        let d1 = TempDir::new("two_del_r1");
+        let d2 = TempDir::new("two_del_r2");
+        write_file(&d1.path().join("match.bin"), b"shared bytes");
+        write_file(&d2.path().join("match.bin"), b"shared bytes");
+
+        let opts = CompareOptions {
+            compare_content:   true,
+            compare_size:      true,
+            delete_duplicates: true,
+            ..default_options()
+        };
+        let group = DuplicateGroup {
+            files_by_folder: vec![
+                vec![d1.path().join("match.bin")],
+                vec![d2.path().join("match.bin")],
+            ],
+            size: 12,
+            match_kind: MatchKind::Exact,
+        };
+
+        move_duplicates_to_deleted(
+            std::slice::from_ref(&group),
+            d1.path().to_str().unwrap(),
+            d2.path().to_str().unwrap(),
+            &opts,
+        ).unwrap();
+
+        assert!(!d1.path().join("match.bin").exists(),
+            "folder1 copy must be moved when a folder2 counterpart exists");
+        assert!(d1.path().join("deleted").join("match.bin").exists(),
+            "folder1 copy must land in deleted/");
+        assert!(d2.path().join("match.bin").exists(),
+            "folder2 copy (the keeper) must be left alone");
     }
 }

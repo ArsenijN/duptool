@@ -1,6 +1,6 @@
 [package]
 name = "duptool"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 authors = ["Arsenii Nochevnyi <arsenijnochevnyj@gmail.com>"]
 description = "Advanced duplicate file finder with smart comparison strategies"
