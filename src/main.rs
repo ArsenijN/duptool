@@ -472,22 +472,23 @@ fn find_duplicates(
 ) -> io::Result<Vec<DuplicateGroup>> {
     vprintln!("Comparing files...");
     
-    // Group files by size as a first pass
+    // Group files by size as a first pass. Consume the input vectors instead of
+    // cloning them — for a large tree these clones duplicate every FileInfo
+    // (and its PathBuf allocation) for no reason.
     let mut size_groups: HashMap<u64, Vec<FileInfo>> = HashMap::new();
-    for file in folder1_files.clone() {
+    for file in folder1_files {
         size_groups.entry(file.size).or_default().push(file);
     }
-    for file in folder2_files.clone() {
+    for file in folder2_files {
         size_groups.entry(file.size).or_default().push(file);
     }
 
-    // Only keep size groups with potential duplicates
-    let mut potential_duplicates: Vec<Vec<FileInfo>> = Vec::new();
-    for group in size_groups.values() {
-        if group.len() > 1 {
-            potential_duplicates.push(group.clone());
-        }
-    }
+    // Only keep size groups with potential duplicates. Move the retained groups
+    // out of the map rather than cloning them.
+    let potential_duplicates: Vec<Vec<FileInfo>> = size_groups
+        .into_values()
+        .filter(|group| group.len() > 1)
+        .collect();
 
     // If not intra_folder and not bidirectional, filter out groups that are only within one folder
     let potential_duplicates: Vec<Vec<FileInfo>> = if options.intra_folder {
@@ -1521,6 +1522,18 @@ fn process_groups(
     Ok(())
 }
 
+/// Order the identical files of an intra-folder group so the one kept in place
+/// comes first. Heuristic, cheapest signal first: shortest base name wins
+/// (copies pick up suffixes like " (1)", "-copy", "_2"), then the shallowest
+/// directory, then the lexicographically smallest path so the result is
+/// deterministic. mtime is deliberately not used — `cp` without `-p`, unzip,
+/// rsync and downloads all rewrite it, so it is not a reliable "original" mark.
+fn keep_rank(path: &Path) -> (usize, usize) {
+    let name_len = path.file_name().map_or(usize::MAX, |n| n.len());
+    let depth = path.components().count();
+    (name_len, depth)
+}
+
 /// Move fuzzy-matched files from folder1 into a `differ/` subfolder,
 /// preserving relative paths. Respects the same -D/-F semantics as
 /// move_duplicates_to_deleted:
@@ -1555,7 +1568,7 @@ fn move_fuzzy_to_differ(
             .map_or(false, |v| !v.is_empty());
 
         let mut folder1_files: Vec<&PathBuf> = group.files_by_folder[0].iter().collect();
-        folder1_files.sort();
+        folder1_files.sort_by(|a, b| keep_rank(a).cmp(&keep_rank(b)).then_with(|| a.cmp(b)));
 
         let files_to_move: Vec<&PathBuf> = if has_folder2_copy {
             folder1_files
@@ -1665,14 +1678,15 @@ fn move_duplicates_to_deleted(
         // An intra-folder group has no counterpart in folder2 (single/-b mode, or a
         // within-folder1 match). There is no "keeper" copy elsewhere, so we must
         // retain one file of the group here and only move the rest — otherwise every
-        // copy is moved away and the data is lost.
+        // copy is moved away and the data is lost. keep_rank picks the retained one
+        // (shortest base name, then shallowest dir, then lexicographic path).
         let has_folder2_copy = duplicate
             .files_by_folder
             .get(1)
             .map_or(false, |v| !v.is_empty());
 
         let mut folder1_files: Vec<&PathBuf> = duplicate.files_by_folder[0].iter().collect();
-        folder1_files.sort();
+        folder1_files.sort_by(|a, b| keep_rank(a).cmp(&keep_rank(b)).then_with(|| a.cmp(b)));
 
         let files_to_move: Vec<&PathBuf> = if has_folder2_copy {
             folder1_files
@@ -2906,6 +2920,51 @@ mod tests {
             "the other copy must be moved into deleted/");
         assert!(d1.path().join("unique.bin").exists(),
             "unrelated files must never be touched");
+    }
+
+    #[test]
+    fn test_intra_folder_delete_keeps_shortest_name() {
+        // keep_rank: the file with the shortest base name is treated as the
+        // original; the suffixed copies are the ones moved away.
+        let d1 = TempDir::new("intra_del_shortest");
+        for n in ["font.woff2", "font (1).woff2", "font-copy.woff2"] {
+            write_file(&d1.path().join(n), b"same webfont bytes");
+        }
+        let opts = CompareOptions {
+            compare_content:   true,
+            compare_size:      true,
+            intra_folder:      true,
+            delete_duplicates: true,
+            ..default_options()
+        };
+        let group = DuplicateGroup {
+            files_by_folder: vec![
+                vec![
+                    d1.path().join("font (1).woff2"),
+                    d1.path().join("font-copy.woff2"),
+                    d1.path().join("font.woff2"),
+                ],
+                vec![],
+            ],
+            size: 18,
+            match_kind: MatchKind::Exact,
+        };
+
+        move_duplicates_to_deleted(
+            std::slice::from_ref(&group),
+            d1.path().to_str().unwrap(),
+            "",
+            &opts,
+        ).unwrap();
+
+        assert!(d1.path().join("font.woff2").exists(),
+            "the shortest name must be kept as the original");
+        assert!(!d1.path().join("font (1).woff2").exists()
+            && !d1.path().join("font-copy.woff2").exists(),
+            "the longer-named copies must be moved");
+        assert!(d1.path().join("deleted").join("font (1).woff2").exists()
+            && d1.path().join("deleted").join("font-copy.woff2").exists(),
+            "both copies must land in deleted/");
     }
 
     #[test]
