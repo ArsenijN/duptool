@@ -5,3 +5,4 @@
 - [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)
 - [ ] `duptool` may become part of an "DViDedit" - software to repair raw DV streams via few captures (acts as video editor, such as Kdenlive, but for media error correction). Info and implementation is pending -- It's now called dvrepair, and works as separate program. Maybe some features will be inspired from there
 - [x] ~~File deduplication deletes file with short name (aka `file (1).txt` is kept, `file.txt` is deleted)~~ -- **fixed in V0.1.18**
+- [ ] `BDEXnk` and `BDEXk` doesn't work to compare the files by filename only between folders
