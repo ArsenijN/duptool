@@ -1,8 +1,9 @@
-- [ ] Fix a potential issue with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **not yet reproduced/confirmed fixed; keep open**
-- [ ] Sort output: currently sorts by first file path (default, added v0.1.12). Add flags for sort by size (`--sort-size`), modification time (`--sort-mtime`), reverse order (`--sort-reverse`)
-- [ ] Fuzzy Mode 2: format-aware metadata skip (JPEG EXIF block, MP4/MOV atoms including trailing atoms) — hash only payload, skip known metadata regions
-- [ ] Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`
-- [ ] Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)
+- [ ] Fix a potential issue with multithread on `-m` option (see the iotop.txt and pidstat.txt in materials) @20260205_015700 — **mitigated in V0.1.19:** with `-m` (default) `-A` no longer spreads reads over up to 4 threads; it now uses one sequential, path-ordered reader per folder (`-M` keeps the all-CPU pool). Needs a re-run of iotop/pidstat on the real HDD setup to confirm before closing
+- [x] ~~Sort output: currently sorts by first file path (default, added v0.1.12). Add flags for sort by size (`--sort-size`), modification time (`--sort-mtime`), reverse order (`--sort-reverse`)~~ -- **done in V0.1.19**
+- [x] ~~Fuzzy Mode 2: format-aware metadata skip (JPEG EXIF block, MP4/MOV atoms including trailing atoms) — hash only payload, skip known metadata regions~~ -- **done in V0.1.19** (`-Y` / `--skip-metadata`)
+- [x] ~~Fuzzy: percentage-based threshold (`-T`) as complement to byte-count `-t`~~ -- **done in V0.1.19**
+- [x] ~~Fuzzy: option to use as automatic fallback in normal exact-match pipeline (when exact hash differs, try fuzzy before discarding)~~ -- **this is what `-Z` already does**: every candidate that fails the quick check / full hash goes to the fuzzy stage (covered by tests in V0.1.19)
 - [ ] `duptool` may become part of an "DViDedit" - software to repair raw DV streams via few captures (acts as video editor, such as Kdenlive, but for media error correction). Info and implementation is pending -- It's now called dvrepair, and works as separate program. Maybe some features will be inspired from there
 - [x] ~~File deduplication deletes file with short name (aka `file (1).txt` is kept, `file.txt` is deleted)~~ -- **fixed in V0.1.18**
-- [ ] `BDEXnk` and `BDEXk` doesn't work to compare the files by filename only between folders
+- [x] ~~`BDEXnk` and `BDEXk` doesn't work to compare the files by filename only between folders~~ -- **fixed in V0.1.19** (`-n`/`-k` without `-s`/`-c` no longer require equal sizes)
+- [ ] Everything integration (`-N` / `-S`) — flags exist but do nothing; they now print a warning when used

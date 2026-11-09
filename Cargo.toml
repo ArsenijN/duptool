@@ -1,7 +1,10 @@
 [package]
 name = "duptool"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2021"
+# The build script lives in src/, so Cargo does not find it automatically.
+# It provides BUILD_DATE / BUILD_NUMBER / GIT_HASH / FULL_VERSION for -V.
+build = "src/build.rs"
 authors = ["Arsenii Nochevnyi <arsenijnochevnyj@gmail.com>"]
 description = "Advanced duplicate file finder with smart comparison strategies"
 license = "MIT"

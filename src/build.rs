@@ -4,16 +4,8 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    // Get build date in YYYYMMDD format
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    
-    let build_date = chrono::NaiveDateTime::from_timestamp_opt(now as i64, 0)
-        .unwrap()
-        .format("%Y%m%d")
-        .to_string();
+    // Get build date in YYYYMMDD format (UTC)
+    let build_date = chrono::Utc::now().format("%Y%m%d").to_string();
     
     // Get or create build counter for today
     let counter_file = Path::new(&env::var("OUT_DIR").unwrap()).join("build_counter.txt");
@@ -45,7 +37,7 @@ fn main() {
     
     // Get git commit hash if available
     let git_hash = Command::new("git")
-        .args(&["rev-parse", "--short=7", "HEAD"])
+        .args(["rev-parse", "--short=7", "HEAD"])
         .output()
         .ok()
         .and_then(|output| {
@@ -60,7 +52,7 @@ fn main() {
     
     // Check if git repo is dirty
     let git_dirty = Command::new("git")
-        .args(&["diff", "--quiet"])
+        .args(["diff", "--quiet"])
         .status()
         .map(|status| !status.success())
         .unwrap_or(false);

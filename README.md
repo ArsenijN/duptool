@@ -10,23 +10,28 @@
 
 ## ✨ Features
 
-- 🔄 **Bidirectional Comparison** (`-B`): Only compare files between `folder1` and `folder2`, ignoring internal duplicates.
-- ⚡ **Quick Check Mode** (`-C`): Compare first and last 8MB before full hashing to speed up detection.
-- 🚀 **Async Processing** (`-A`/`-E`): Compare files in parallel using multithreading.
-- 🗃️ **Name/Size Comparison** (`-n`, `-s`): Optional modes for fast, coarse comparison.
+- 🔄 **Between-folder Comparison** (default, `-B`): Only compare files between `folder1` and `folder2`, ignoring internal duplicates.
+- ⚡ **Quick Check Mode** (`-C`): Compare first and last 8MB only; with `-A`/`-E` the quick check becomes a filter before a full hash.
+- 🚀 **Async Processing** (`-A`/`-E`): Hash in parallel. With `-m` (default) each folder gets one sequential reader (HDD-friendly; two disks are still read in parallel); with `-M`, `-A` uses all CPUs.
+- 🗃️ **Name/Stem/Extension/Size Comparison** (`-n`, `-k`, `-e`, `-s`): Coarse, metadata-only matching. `-n`/`-k` alone match by name regardless of size; add `-s` or `-c` to also require equal size/content.
 - 📁 **Single Folder Mode** (`-1`): Find duplicates within a single folder — no second folder required.
 - 🔁 **Intra-folder Search** (`-b`): Also find duplicates within each folder alongside inter-folder comparison.
-- 🌫️ **Fuzzy Comparison** (`-Z -t N`): Detect near-duplicates that differ only in embedded metadata (EXIF, GPS, modify date). Files within N differing bytes are moved to a `differ/` folder for review. Use `-U` to treat fuzzy matches as exact duplicates instead.
+- 🌫️ **Fuzzy Comparison** (`-Z -t N` / `-Z -T P`): Detect near-duplicates of the same size that differ in at most N bytes (or P % of the file). Runs on every candidate that failed the exact stages. Matches are moved to a `differ/` folder for review.
+- 🖼️ **Metadata-aware Comparison** (`-Y`): Match JPEG / MP4 / MOV files whose image or video payload is identical while their metadata (EXIF, XMP, GPS atoms, trailing atoms) differs — even when their sizes differ.
 - 📂 **Smart Deletion**:
-  - `-D`: Move duplicates to `deleted` subfolder if path matches.
-  - `-F`: Force-delete duplicates from `folder1`, regardless of relative path.
-  - `-Z` (fuzzy, default): Move near-duplicates to `differ/` subfolder for review.
-  - `-Z -U` (fuzzy-as-dupes): Near-duplicates treated as exact, eligible for `-D`/`-F`.
-- 🔍 **Everything Integration**: Use Everything for rapid name/size checks (`-N`, `-S`).
-- 🧠 **Progress Estimation**: Real-time ETA updates and per-file speed feedback via dual progress bars.
+  - `-D`: Move a duplicate to `deleted/` only if the file at the same relative path in `folder2` is the matching copy.
+  - `-F`: Force-move duplicates from `folder1`, regardless of relative path.
+  - Within a folder (`-1`/`-b`) one copy is always kept — the one with the shortest name.
+  - `-Z`/`-Y`: Move near-duplicates to `differ/` for review; add `-U` to treat them as exact duplicates (moved to `deleted/`).
+  - Never overwrites: an existing `deleted/x` makes the new file `deleted/x~1`. `deleted/` and `differ/` are not rescanned on the next run.
+  - Refuses to run on the same folder twice or on nested folders (a file would be "matched" with itself).
+- ↕️ **Sorting**: `--sort-size`, `--sort-mtime`, `--sort-reverse` (default: by path).
+- 🧠 **Progress Estimation**: Files and bytes progress bars with throughput and ETA.
 - 🧰 **Debug Mode** (`-X`): Outputs detailed logs for diagnostics, including fuzzy byte-diff info.
-- 🧹 **Path Handling**: Handles long paths and Unicode edge cases on Windows.
-- 🛠️ **HDD Optimization**: Control caching behavior (`-m`, `-M`) for HDD/SSD.
+- 🛠️ **HDD Optimization**: `-m` (default) reads in path order with at most one reader per folder; `-M` for SSDs.
+- 🔍 **Everything Integration** (`-N`, `-S`): reserved, not implemented yet.
+
+The `match` column of the output shows how a group was verified: `EXACT` (full hash), `QUICK` (`-C` only: first/last 8MB), `UNCHECKED` (name/size/extension only), `FUZZY ~NB`, or `META` (same payload, different metadata).
 
 ---
 
@@ -79,6 +84,24 @@ duptool folder1 folder2 -Z -t 50 -U -F
 ```
 
 Treat fuzzy matches as exact duplicates and force-move them to `deleted/`.
+
+```sh
+duptool folder1 folder2 -Z -T 0.1
+```
+
+Percentage threshold: files of the same size that differ in at most 0.1 % of their bytes. With both `-t` and `-T`, the stricter limit wins.
+
+```sh
+duptool photos backup -Y -D
+```
+
+Match photos/videos whose EXIF/XMP or MP4/MOV metadata was changed or stripped (e.g. by a phone or cloud export) and move them to `photos/differ/`.
+
+```sh
+duptool music1 music2 -BDnk --sort-size --sort-reverse
+```
+
+Match by file name only (sizes may differ), move matches from `music1` to `music1/deleted/`, largest first.
 
 For a full list of flags, run:
 
@@ -196,7 +219,7 @@ Planned improvements include:
 * Per-file progress bar
 * Interactive duplicate management mode
 * Better path/unicode edge case handling
-* Automated tests and CI
+* CI (automated tests exist: `cargo test`)
 
 ---
 
